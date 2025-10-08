@@ -1,0 +1,2396 @@
+#pragma warning(disable: 4996)
+#define _USE_MATH_DEFINES									// 円周率 PI (= 3.14159...) = "M_PI"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <complex.h>
+#include <float.h>
+
+//#define Epsilon_Fine 1.0e-10					// PhC-Band計算用(丸め)誤差判定閾値(strict)
+#define eps 1.0e-9								// PhC-Band計算用(丸め)誤差判定閾値(strict)
+#define Epsilon 1.0e-7							// PhC-Band計算用(丸め)誤差判定閾値(standard)
+#define EPS 1.0e-4								// PhC-Band計算用(丸め)誤差判定閾値(rough)
+
+//#define Epsilon_Fine 1.0e-14								// PhC-Band計算用(丸め)誤差判定閾値(rough)
+
+#define MaxCount 20										// 最大反復回数(最大繰返し処理回数)
+
+//□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□
+// Generalized Schur Decomposition (QZ Decomposition) for 1D_Photonic Band
+//□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□□
+
+
+//*****************************************************************************
+// Four Arithmetic Operations in Complex Number
+//*****************************************************************************
+typedef struct
+{
+	double Re;												// real part in complex number
+	double Im;												// imaginary part in complex number
+} complex;
+
+complex ComplexAddition(complex f, complex g)				// Addition
+{
+	complex z;
+	z.Re = f.Re + g.Re;
+	z.Im = f.Im + g.Im;
+	return (z);
+}
+
+complex ComplexSubtraction(complex f, complex g)			// Subtraction
+{
+	complex z;
+	z.Re = f.Re - g.Re;
+	z.Im = f.Im - g.Im;
+	return (z);
+}
+
+complex ComplexMultiplication(complex f, complex g)			// Multiplication
+{
+	complex z;
+	z.Re = f.Re * g.Re - f.Im * g.Im;
+	z.Im = f.Re * g.Im + f.Im * g.Re;
+	return (z);
+}
+
+complex ComplexDivision(complex f, complex g)				// Division
+{
+	double ComplexNorm;
+	ComplexNorm = g.Re * g.Re + g.Im * g.Im;
+
+	complex z;
+	z.Re = (f.Re * g.Re + f.Im * g.Im) / ComplexNorm;
+	z.Im = (f.Im * g.Re - f.Re * g.Im) / ComplexNorm;
+	return (z);
+}
+
+
+//*****************************************************************************
+// Main-Routine
+//*****************************************************************************
+
+int main(void)
+{
+	//=========================================================================
+	// 変数の設定
+	//=========================================================================
+	double Epsilon_Fine = DBL_EPSILON;						// 機械精度 ~ 2.2e-16 (倍精度)
+	double tol;												// 閾値判定用変数
+
+	//-------------------------------------------------------------------------
+	// Fourier展開・Bloch定理におけるIndex用の変数設定
+	//-------------------------------------------------------------------------
+	int Nk = 160;											// Bloch定理における逆格子空間領域のindex(逆格子点の数)
+	int N_G = 2;											// Fourier級数展開における周波数領域のindex(周波数mode数)
+	double kx;												// 逆格子空間における波数ベクトルのa方向用変数
+	double G;												// Fourier級数展開の種々周波数modeにおける角周波数用変数
+	double G_M;												// Fourier級数展開の種々周波数mode (index) "M"における角周波数用変数
+	double G_m;												// Fourier級数展開の種々周波数mode (index) "m"における角周波数用変数
+
+
+	//-------------------------------------------------------------------------
+	// Original matrices用の変数設定
+	//-------------------------------------------------------------------------
+	double** A = NULL;										// 一般化固有値方程式の左辺の行列用ポインタ変数(実行列対応)
+	double** AR = NULL;										// 一般化固有値方程式の右辺の行列用ポインタ変数(実行列対応)
+	double** Unit = NULL;									// 単位行列用ポインタ変数(実行列対応)
+	_Dcomplex** A_C = NULL;									// 一般化固有値方程式の左辺の行列用ポインタ変数(複素行列対応)
+	_Dcomplex** AR_C = NULL;								// 一般化固有値方程式の右辺の行列用ポインタ変数(複素行列対応)
+	_Dcomplex** Unit_C = NULL;								// 単位行列用ポインタ変数(複素行列対応)
+
+	A = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	AR = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	Unit = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	A_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	AR_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	Unit_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+
+
+	//-------------------------------------------------------------------------
+	// Givens回転操作用の変数設定
+	//-------------------------------------------------------------------------
+	// 行列"A"のためのGivens回転操作用変数
+	double A_a;
+	double A_b;
+	double d_A;
+	double cos_A;
+	double sin_A;
+	double temp_A_a;
+	double temp_A_b;
+	_Dcomplex A_C_a;
+	_Dcomplex A_C_b;
+	_Dcomplex cos_A_C;
+	_Dcomplex sin_A_C;
+	_Dcomplex temp_A_C_a;
+	_Dcomplex temp_A_C_b;
+
+	// 行列"AR"のためのGivens回転操作用変数
+	double AR_a;
+	double AR_b;
+	double d_AR;
+	double cos_AR;
+	double sin_AR;
+	double temp_AR_a;
+	double temp_AR_b;
+	_Dcomplex AR_C_a;
+	_Dcomplex AR_C_b;
+	_Dcomplex cos_AR_C;
+	_Dcomplex sin_AR_C;
+	_Dcomplex temp_AR_C_a;
+	_Dcomplex temp_AR_C_b;
+
+	//QZ分解におけるGivens回転操作用変数
+	double T_a;
+	double T_b;
+	double d_T;
+	double cos_T;
+	double sin_T;
+	double temp_T_a;
+	double temp_T_b;
+	double temp_H_a;
+	double temp_H_b;
+	_Dcomplex T_C_a;
+	_Dcomplex T_C_b;
+	_Dcomplex cos_T_C;
+	_Dcomplex sin_T_C;
+	_Dcomplex temp_T_C_a;
+	_Dcomplex temp_T_C_b;
+	_Dcomplex temp_H_C_a;
+	_Dcomplex temp_H_C_b;
+
+	// QZ分解の前段階の行列形式用変数
+	double** H = NULL;										// (上)Hessenberg行列化された行列"A"のためのポインタ変数(実行列用)
+	_Dcomplex** H_C = NULL;									// (上)Hessenberg行列化された行列"A"のためのポインタ変数(複素行列用)
+	double** T = NULL;										// 上三角行列化された行列"AR"のためのポインタ変数(実行列用)
+	_Dcomplex** T_C = NULL;									// 上三角行列化された行列"AR"のためのポインタ変数(複素行列用)
+
+	H = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	H_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	T = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	T_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+
+
+	//-------------------------------------------------------------------------
+	// Householder反射行列を構築するための(bulge導入およびbulge追跡のための)変数設定
+	//-------------------------------------------------------------------------
+	double* xQ = NULL;										// bulge導入Q1用(実数対応)
+	double* yQ = NULL;										// bulge導入Q1用(実数対応)
+	double* uQ = NULL;										// bulge導入Q1用(実数対応)
+	_Dcomplex* xQ_C = NULL;									// bulge導入Q1用(複素数対応)
+	_Dcomplex* yQ_C = NULL;									// bulge導入Q1用(複素数対応)
+	_Dcomplex* uQ_C = NULL;									// bulge導入Q1用(複素数対応)
+	double* xHT = NULL;										// Hessenberg戻しQ_i用(実数対応) ※i > 1
+	double* yHT = NULL;										// Hessenberg戻しQ_i用(実数対応) ※i > 1
+	double* uHT = NULL;										// Hessenberg戻しQ_i用(実数対応) ※i > 1
+	_Dcomplex* xHT_C = NULL;								// Hessenberg戻しQ_i用(複素数対応) ※i > 1
+	_Dcomplex* yHT_C = NULL;								// Hessenberg戻しQ_i用(複素数対応) ※i > 1
+	_Dcomplex* uHT_C = NULL;								// Hessenberg戻しQ_i用(複素数対応) ※i > 1
+	double* xZ = NULL;
+	double* yZ = NULL;
+	double* uZ = NULL;
+	_Dcomplex* xZ_C = NULL;
+	_Dcomplex* yZ_C = NULL;
+	_Dcomplex* uZ_C = NULL;
+
+	xQ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	yQ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	uQ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	xQ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	yQ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	uQ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	xHT = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	yHT = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	uHT = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	xHT_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	yHT_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	uHT_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	xZ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	yZ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	uZ = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+	xZ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	yZ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+	uZ_C = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+	double** P_Qprt = NULL;
+	double** P_Q = NULL;
+	double** P_Zprt = NULL;
+	double** P_Z = NULL;
+	_Dcomplex** P_Qprt_C = NULL;
+	_Dcomplex** P_Q_C = NULL;
+	_Dcomplex** P_Zprt_C = NULL;
+	_Dcomplex** P_Z_C = NULL;
+
+	double** temp_P = NULL;
+	double** temp_QH = NULL;
+	double** temp_QHZ = NULL;
+	double** temp_QT = NULL;
+	double** temp_QTZ = NULL;
+	_Dcomplex** temp_P_C = NULL;
+	_Dcomplex** temp_QH_C = NULL;
+	_Dcomplex** temp_QHZ_C = NULL;
+	_Dcomplex** temp_QT_C = NULL;
+	_Dcomplex** temp_QTZ_C = NULL;
+
+	P_Qprt = (double*)malloc(sizeof(double*) * (2 * N_G + 1));
+	P_Q = (double*)malloc(sizeof(double*) * (2 * N_G + 1));
+	P_Zprt = (double*)malloc(sizeof(double*) * (2 * N_G + 1));
+	P_Z = (double*)malloc(sizeof(double*) * (2 * N_G + 1));
+	P_Qprt_C = (_Dcomplex*)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	P_Q_C = (_Dcomplex*)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	P_Zprt_C = (_Dcomplex*)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	P_Z_C = (_Dcomplex*)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+
+	temp_P = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	temp_QH = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	temp_QHZ = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	temp_QT = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	temp_QTZ = (double**)malloc(sizeof(double*) * (2 * N_G + 1));
+	temp_P_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	temp_QH_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	temp_QHZ_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	temp_QT_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+	temp_QTZ_C = (_Dcomplex**)malloc(sizeof(_Dcomplex*) * (2 * N_G + 1));
+
+	double sQ;												// 
+	double sHT;												// 
+	double sZ;												// 
+	double Norm_xyQ;										// Householder反射ベクトル"u"を構成するベクトル(x-y)のNorm計算用変数
+	double Norm_xyHT;										// 
+	double Norm_xyZ;										// 
+	double Eu_Norm_xQ;										// Householder変換skip判定のためのEuclid-Norm計算用変数
+	double Eu_Norm_xHT;										// 
+	double Eu_Norm_xZ;										// 
+	double temp_H;
+	double temp_T;
+	_Dcomplex temp_H_C;
+	_Dcomplex temp_T_C;
+
+
+	//*************************************************************************
+	// 動的メモリ確保不可の場合 --> 宣言した動的メモリの解放および強制的Build終了
+	if (A == NULL || AR == NULL || Unit == NULL || A_C == NULL || AR_C == NULL || Unit_C == NULL || H == NULL || H_C == NULL || T == NULL || T_C == NULL) {
+		printf("Dynamic memories for the Row of original matrices can't be reserved.\n");
+		return 1;
+	}
+	else if (xQ == NULL || yQ == NULL || uQ == NULL || xQ_C == NULL || yQ_C == NULL || uQ_C == NULL || xHT == NULL || yHT == NULL || uHT == NULL || xHT_C == NULL || yHT_C == NULL || uHT_C == NULL || xZ == NULL || yZ == NULL || uZ == NULL || xZ_C == NULL || yZ_C == NULL || uZ_C == NULL) {
+		printf("Dynamic memories for vectors in QZ-Decomposition can't be reserved.\n");
+		return 1;
+	}
+	else if (P_Qprt == NULL || P_Q == NULL || P_Zprt == NULL || P_Z == NULL || P_Qprt_C == NULL || P_Q_C == NULL || P_Zprt_C == NULL || P_Z_C == NULL || temp_P == NULL || temp_QH == NULL || temp_QHZ == NULL || temp_QT == NULL || temp_QTZ == NULL || temp_P_C == NULL || temp_QH_C == NULL || temp_QHZ_C == NULL || temp_QT_C == NULL || temp_QTZ_C == NULL) {
+		printf("Dynamic memories for the Row of matrices in QZ-Decomposition can't be reserved.\n");
+		return 1;
+	}
+	//*************************************************************************
+
+
+	//-------------------------------------------------------------------------
+	// 2次元配列要素数の設定
+	//-------------------------------------------------------------------------
+	for (int i = 0; i < (2 * N_G) + 1; i++)
+	{
+		A[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		AR[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		Unit[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		A_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		AR_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		Unit_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+		H[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		H_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		T[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		T_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+		P_Qprt[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		P_Q[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		P_Qprt_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		P_Q_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+		P_Zprt[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		P_Z[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		P_Zprt_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		P_Z_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+		temp_P[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		temp_QH[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		temp_QHZ[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		temp_QT[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		temp_QTZ[i] = (double*)malloc(sizeof(double) * (2 * N_G + 1));
+		temp_P_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		temp_QH_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		temp_QHZ_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		temp_QT_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+		temp_QTZ_C[i] = (_Dcomplex*)malloc(sizeof(_Dcomplex) * (2 * N_G + 1));
+
+
+		//*********************************************************************
+		// 動的メモリ確保不可の場合 --> 宣言した動的メモリの解放および強制的Build終了
+
+		// dynamic memories確保可能かどうかの判断のための変数		
+		int DynamicMemory = 0;
+
+		if (A[i] == NULL || AR[i] == NULL || Unit[i] == NULL || A_C[i] == NULL || AR_C[i] == NULL || Unit_C[i] == NULL || H[i] == NULL || H_C[i] == NULL || T[i] == NULL || T_C[i] == NULL || P_Qprt[i] == NULL || P_Q[i] == NULL || P_Qprt_C[i] == NULL || P_Q_C[i] == NULL || P_Zprt[i] == NULL || P_Z[i] == NULL || P_Zprt_C[i] == NULL || P_Z_C[i] == NULL || temp_P[i] == NULL || temp_QH[i] == NULL || temp_QHZ[i] == NULL || temp_QT[i] == NULL || temp_QTZ[i] == NULL || temp_P_C[i] == NULL || temp_QH_C[i] == NULL || temp_QHZ_C[i] == NULL || temp_QT_C[i] == NULL || temp_QTZ_C[i] == NULL) {
+			DynamicMemory = 1;
+			printf("Dynamic memories for the Column of original matrices or matrices in QZ-Decomposition can't be reserved in i = %d.\n", i);
+		}
+
+		if (DynamicMemory == 1) {
+			// 2-demension dynamic memories
+			for (int a = 0; a < i; a++)
+			{
+				free(A[a]);
+				free(AR[a]);
+				free(Unit[a]);
+				free(A_C[a]);
+				free(AR_C[a]);
+				free(Unit_C[a]);
+
+				free(H[a]);
+				free(H_C[a]);
+				free(T[a]);
+				free(T_C[a]);
+
+				free(P_Qprt[a]);
+				free(P_Q[a]);
+				free(P_Qprt_C[a]);
+				free(P_Q_C[a]);
+				free(P_Zprt[a]);
+				free(P_Z[a]);
+				free(P_Zprt_C[a]);
+				free(P_Z_C[a]);
+
+				free(temp_P[a]);
+				free(temp_QH[a]);
+				free(temp_QHZ[a]);
+				free(temp_QT[a]);
+				free(temp_QTZ[a]);
+				free(temp_P_C[a]);
+				free(temp_QH_C[a]);
+				free(temp_QHZ_C[a]);
+				free(temp_QT_C[a]);
+				free(temp_QTZ_C[a]);
+			}
+			free(A);
+			free(AR);
+			free(Unit);
+			free(A_C);
+			free(AR_C);
+			free(Unit_C);
+
+			free(H);
+			free(H_C);
+			free(T);
+			free(T_C);
+
+			free(P_Qprt);
+			free(P_Q);
+			free(P_Qprt_C);
+			free(P_Q_C);
+			free(P_Zprt);
+			free(P_Z);
+			free(P_Zprt_C);
+			free(P_Z_C);
+
+			free(temp_P);
+			free(temp_QH);
+			free(temp_QHZ);
+			free(temp_QT);
+			free(temp_QTZ);
+			free(temp_P_C);
+			free(temp_QH_C);
+			free(temp_QHZ_C);
+			free(temp_QT_C);
+			free(temp_QTZ_C);
+
+			// 1-demension dynamic memories
+			free(xQ);
+			free(yQ);
+			free(uQ);
+			free(xQ_C);
+			free(yQ_C);
+			free(uQ_C);
+			free(xHT);
+			free(yHT);
+			free(uHT);
+			free(xHT_C);
+			free(yHT_C);
+			free(uHT_C);
+			free(xZ);
+			free(yZ);
+			free(uZ);
+			free(xZ_C);
+			free(yZ_C);
+			free(uZ_C);
+
+			// Build終了へ
+			return 1;
+		}
+		//*********************************************************************
+	}
+
+
+
+
+	//=========================================================================
+	// 行列成分の設定
+	//=========================================================================
+
+	//-------------------------------------------------------------------------
+	// 一般化固有値方程式(一般化固有値問題)における両辺の行列成分を設定
+	//-------------------------------------------------------------------------
+	if (N_G == 2) {
+		// case_1
+		A[0][0] = -0.3;		A[0][1] = 2.9;		A[0][2] = -2.8;		A[0][3] = -4.8;		A[0][4] = 1.2;
+		A[1][0] = 2.4;		A[1][1] = -6.1;		A[1][2] = -2.5;		A[1][3] = -0.1;		A[1][4] = -4.1;
+		A[2][0] = 0.0;		A[2][1] = 7.2;		A[2][2] = -2.1;		A[2][3] = 2.1;		A[2][4] = -5.8;
+		A[3][0] = 0.0;		A[3][1] = 0.0;		A[3][2] = 3.0;		A[3][3] = -4.6;		A[3][4] = -6.9;
+		A[4][0] = 0.0;		A[4][1] = 0.0;		A[4][2] = 0.0;		A[4][3] = -2.1;		A[4][4] = -1.1;
+
+		AR[0][0] = 5.8;		AR[0][1] = 2.8;		AR[0][2] = 3.3;		AR[0][3] = 4.5;		AR[0][4] = -0.9;
+		AR[1][0] = 0.0;		AR[1][1] = 5.8;		AR[1][2] = 1.5;		AR[1][3] = -4.5;	AR[1][4] = -4.8;
+		AR[2][0] = 0.0;		AR[2][1] = 0.0;		AR[2][2] = 4.4;		AR[2][3] = -0.7;	AR[2][4] = 0.6;
+		AR[3][0] = 0.0;		AR[3][1] = 0.0;		AR[3][2] = 0.0;		AR[3][3] = 1.0;		AR[3][4] = -1.6;
+		AR[4][0] = 0.0;		AR[4][1] = 0.0;		AR[4][2] = 0.0;		AR[4][3] = 0.0;		AR[4][4] = -6.4;
+	}
+
+	else if (N_G == 5) {
+		// case_1
+		//A[0][0] = 4.97;		A[0][1] = -4.51;	A[0][2] = -2.86;	A[0][3] = 4.96;		A[0][4] = -1.52;	A[0][5] = -0.39;	A[0][6] = -4.02;	A[0][7] = 1.18;		A[0][8] = -1.89;	A[0][9] = -3.00;	A[0][10] = -0.38;
+		//A[1][0] = 4.31;		A[1][1] = 3.51;		A[1][2] = 1.98;		A[1][3] = -2.93;	A[1][4] = -1.44;	A[1][5] = -3.65;	A[1][6] = -4.26;	A[1][7] = -0.99;	A[1][8] = -0.53;	A[1][9] = -2.98;	A[1][10] = 1.40;
+		//A[2][0] = -0.30;	A[2][1] = 2.31;		A[2][2] = -4.26;	A[2][3] = 4.68;		A[2][4] = 2.36;		A[2][5] = -1.79;	A[2][6] = 1.25;		A[2][7] = 4.68;		A[2][8] = 2.63;		A[2][9] = 0.77;		A[2][10] = -2.37;
+		//A[3][0] = 1.68;		A[3][1] = -1.07;	A[3][2] = 2.35;		A[3][3] = -1.95;	A[3][4] = -4.08;	A[3][5] = 4.42;		A[3][6] = 1.52;		A[3][7] = -1.18;	A[3][8] = 4.34;		A[3][9] = 1.77;		A[3][10] = 2.95;
+		//A[4][0] = 3.33;		A[4][1] = 4.25;		A[4][2] = -3.02;	A[4][3] = -3.91;	A[4][4] = 3.87;		A[4][5] = -1.78;	A[4][6] = 2.29;		A[4][7] = -0.35;	A[4][8] = -3.15;	A[4][9] = -1.16;	A[4][10] = 2.31;
+		//A[5][0] = -0.51;	A[5][1] = -2.80;	A[5][2] = -1.54;	A[5][3] = 4.43;		A[5][4] = -1.33;	A[5][5] = 3.23;		A[5][6] = 0.55;		A[5][7] = 4.51;		A[5][8] = 3.55;		A[5][9] = 2.06;		A[5][10] = -2.48;
+		//A[6][0] = -3.77;	A[6][1] = -2.93;	A[6][2] = 4.86;		A[6][3] = -0.45;	A[6][4] = -3.40;	A[6][5] = -4.42;	A[6][6] = 1.44;		A[6][7] = 3.28;		A[6][8] = -0.17;	A[6][9] = 4.54;		A[6][10] = -1.67;
+		//A[7][0] = -4.15;	A[7][1] = -2.46;	A[7][2] = -3.43;	A[7][3] = 0.43;		A[7][4] = 2.46;		A[7][5] = 0.77;		A[7][6] = -0.69;	A[7][7] = -2.08;	A[7][8] = -3.19;	A[7][9] = -0.49;	A[7][10] = -1.20;
+		//A[8][0] = -1.94;	A[8][1] = -1.81;	A[8][2] = -0.69;	A[8][3] = 2.23;		A[8][4] = -0.37;	A[8][5] = 1.97;		A[8][6] = -0.95;	A[8][7] = -5.00;	A[8][8] = -3.31;	A[8][9] = 3.94;		A[8][10] = 4.89;
+		//A[9][0] = -2.56;	A[9][1] = -2.93;	A[9][2] = 4.07;		A[9][3] = -2.20;	A[9][4] = 4.68;		A[9][5] = 2.82;		A[9][6] = -2.00;	A[9][7] = -0.49;	A[9][8] = 0.24;		A[9][9] = 2.79;		A[9][10] = 2.27;
+		//A[10][0] = 1.17;	A[10][1] = 4.31;	A[10][2] = 3.19;	A[10][3] = -0.93;	A[10][4] = -2.89;	A[10][5] = 4.03;	A[10][6] = -1.80;	A[10][7] = -4.11;	A[10][8] = 0.37;	A[10][9] = -2.44;	A[10][10] = -1.22;
+
+		//AR[0][0] = 3.82;	AR[0][1] = 3.10;	AR[0][2] = -4.53;	AR[0][3] = -4.12;	AR[0][4] = -2.97;	AR[0][5] = 3.24;	AR[0][6] = 0.32;	AR[0][7] = 3.63;	AR[0][8] = -0.78;	AR[0][9] = -4.01;	AR[0][10] = 2.29;
+		//AR[1][0] = 2.82;	AR[1][1] = 1.86;	AR[1][2] = 2.99;	AR[1][3] = 0.13;	AR[1][4] = 1.79;	AR[1][5] = 4.53;	AR[1][6] = -3.35;	AR[1][7] = -3.79;	AR[1][8] = 2.17;	AR[1][9] = -2.53;	AR[1][10] = -4.14;
+		//AR[2][0] = -2.79;	AR[2][1] = 2.25;	AR[2][2] = -0.60;	AR[2][3] = -1.68;	AR[2][4] = -4.93;	AR[2][5] = 2.82;	AR[2][6] = 3.21;	AR[2][7] = 3.47;	AR[2][8] = 1.51;	AR[2][9] = 1.68;	AR[2][10] = 2.14;
+		//AR[3][0] = -0.43;	AR[3][1] = -4.24;	AR[3][2] = -1.87;	AR[3][3] = 2.47;	AR[3][4] = 1.39;	AR[3][5] = 1.96;	AR[3][6] = 0.60;	AR[3][7] = -1.24;	AR[3][8] = 2.76;	AR[3][9] = 1.40;	AR[3][10] = -2.42;
+		//AR[4][0] = -2.43;	AR[4][1] = 2.33;	AR[4][2] = -4.08;	AR[4][3] = -3.89;	AR[4][4] = 0.53;	AR[4][5] = 0.67;	AR[4][6] = 1.80;	AR[4][7] = 4.24;	AR[4][8] = 4.35;	AR[4][9] = 0.71;	AR[4][10] = 0.12;
+		//AR[5][0] = -3.59;	AR[5][1] = 2.80;	AR[5][2] = -0.93;	AR[5][3] = -1.14;	AR[5][4] = -2.65;	AR[5][5] = 4.61;	AR[5][6] = 0.53;	AR[5][7] = -0.43;	AR[5][8] = 4.95;	AR[5][9] = 3.60;	AR[5][10] = 1.25;
+		//AR[6][0] = -1.06;	AR[6][1] = 1.28;	AR[6][2] = 4.29;	AR[6][3] = -1.51;	AR[6][4] = -3.35;	AR[6][5] = -1.46;	AR[6][6] = 3.79;	AR[6][7] = -2.17;	AR[6][8] = -3.73;	AR[6][9] = -0.86;	AR[6][10] = -2.23;
+		//AR[7][0] = -1.81;	AR[7][1] = -2.16;	AR[7][2] = -4.50;	AR[7][3] = 2.42;	AR[7][4] = 1.43;	AR[7][5] = 1.36;	AR[7][6] = 4.51;	AR[7][7] = -4.80;	AR[7][8] = 0.65;	AR[7][9] = 4.10;	AR[7][10] = -1.51;
+		//AR[8][0] = 1.18;	AR[8][1] = 3.09;	AR[8][2] = -3.93;	AR[8][3] = 4.81;	AR[8][4] = -0.22;	AR[8][5] = -0.38;	AR[8][6] = 1.55;	AR[8][7] = 1.25;	AR[8][8] = -3.38;	AR[8][9] = -3.05;	AR[8][10] = -3.65;
+		//AR[9][0] = -3.05;	AR[9][1] = 4.01;	AR[9][2] = -1.64;	AR[9][3] = 2.13;	AR[9][4] = -3.68;	AR[9][5] = -0.28;	AR[9][6] = 1.46;	AR[9][7] = -3.30;	AR[9][8] = 1.76;	AR[9][9] = -3.14;	AR[9][10] = 3.23;
+		//AR[10][0] = 3.26;	AR[10][1] = 1.59;	AR[10][2] = 1.86;	AR[10][3] = -2.29;	AR[10][4] = 2.35;	AR[10][5] = 3.72;	AR[10][6] = 2.05;	AR[10][7] = 2.10;	AR[10][8] = 1.72;	AR[10][9] = -2.75;	AR[10][10] = 1.59;
+	}
+
+
+	//-------------------------------------------------------------------------
+	// 各成分の初期値を設定
+	//-------------------------------------------------------------------------
+	for (int i = 0; i < (2 * N_G) + 1; i++)
+	{
+		for (int j = 0; j < (2 * N_G) + 1; j++)
+		{
+			H[i][j] = A[i][j];
+			T[i][j] = AR[i][j];
+		}
+	}
+
+
+	//-------------------------------------------------------------------------
+	// 単位行列を設定
+	//-------------------------------------------------------------------------
+	for (int i = 0; i < (2 * N_G) + 1; i++)
+	{
+		for (int j = 0; j < (2 * N_G) + 1; j++)
+		{
+			Unit[i][j] = 0.0;
+			Unit_C[i][j] = _Cbuild(0.0, 0.0);
+		}
+		Unit[i][i] = 1.0;
+		Unit_C[i][i] = _Cbuild(1.0, 0.0);
+	}
+
+
+	//*************************************************************************
+	// 途中結果
+	printf("Upper Hessenberg Matrix \"H\"\n");
+	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	{
+		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+		{
+			printf("%.1f\t", H[i_cmp][j_cmp]);
+		}
+		printf("\n");
+	}
+	printf("\n");
+
+	printf("Upper Triangular Matrix \"T\"\n");
+	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	{
+		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+		{
+			printf("%.1f\t", T[i_cmp][j_cmp]);
+		}
+		printf("\n");
+	}
+	printf("\n");
+	printf("\n");
+	printf("\n");
+	//*************************************************************************
+
+
+
+
+	//=========================================================================
+	// QZ Algorithmにおける変数設定
+	//=========================================================================
+	_Dcomplex mu1;
+	_Dcomplex mu2;
+
+	double a10;
+	double a20;
+	double a30;
+
+
+	//-------------------------------------------------------------------------
+	// 列ベクトル(a10, a20, a30)^Tの構築 ※1st bulge導入のための列ベクトル(a10, a20, a30)^T
+	//-------------------------------------------------------------------------
+	double temp_a10a;
+	double temp_a10b;
+	double temp_a10c;
+	double temp_a20a;
+	double temp_a20b;
+	double temp_a20c;
+
+	//temp_a10a = ((H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[0][0] / T[0][0])) * ((H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[0][0] / T[0][0]));
+	//temp_a10b = (H[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]);
+	//temp_a10c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[0][0] / T[0][0]);
+
+	//temp_a20a = (H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[0][0] / T[0][0]);
+	//temp_a20b = (H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[0][0] / T[0][0]);
+	//temp_a20c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]);
+
+	//a10 = (temp_a10a - temp_a10b + temp_a10c) * (T[0][0] / H[1][0]) + (H[0][1] / T[1][1]) - (H[0][0] / T[0][0]) * (T[0][1] / T[1][1]);
+	//a20 = (H[1][1] / T[1][1]) - (H[0][0] / T[0][0]) - (H[1][0] / T[0][0]) * (T[0][1] / T[1][1]) - temp_a20a - temp_a20b + temp_a20c;
+	//a30 = H[2][1] / T[1][1];
+
+
+	//-------------------------------------------------------------------------
+	// 1st bulge導入(Bulge Introduction)のためのHouseholder反射行列"P_Q"を構築
+	//-------------------------------------------------------------------------
+	printf("[mQZ = 0]\n\n");
+
+	int count = 0;
+	int mQZ = 0;
+	int mQ_n;
+	
+	//while (mQZ < ((2 * N_G) + 1) - 2)
+	//{
+
+	//}
+
+	while (fabs(H[mQZ + 1][mQZ]) > DBL_EPSILON * (fabs(H[mQZ][mQZ]) + fabs(H[mQZ + 1][mQZ + 1])))
+	{
+		temp_a10a = ((H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ])) * ((H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[mQZ][mQZ] / T[mQZ][mQZ]));
+		temp_a10b = (H[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]);
+		temp_a10c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[mQZ][mQZ] / T[mQZ][mQZ]);
+
+		temp_a20a = (H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]);
+		temp_a20b = (H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[mQZ][mQZ] / T[mQZ][mQZ]);
+		temp_a20c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]);
+
+		a10 = (temp_a10a - temp_a10b + temp_a10c) * (T[mQZ][mQZ] / H[mQZ + 1][mQZ]) + (H[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]) * (T[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]);
+		a20 = (H[mQZ + 1][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]) - (H[mQZ + 1][mQZ] / T[mQZ][mQZ]) * (T[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - temp_a20a - temp_a20b + temp_a20c;
+		a30 = H[mQZ + 2][mQZ + 1] / T[mQZ + 1][mQZ + 1];
+
+		// Householder反射行列の初期化
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Qprt[i][j] = 0.0;
+				P_Q[i][j] = 0.0;
+			}
+		}
+
+		// (列)ベクトル"x"を設定
+		Eu_Norm_xQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			if (i == mQZ) {
+				xQ[i] = a10;
+			}
+			else if (i == mQZ + 1) {
+				xQ[i] = a20;
+			}
+			else if (i == mQZ + 2) {
+				xQ[i] = a30;
+			}
+
+			Eu_Norm_xQ = Eu_Norm_xQ + xQ[i] * xQ[i];
+		}
+		Eu_Norm_xQ = sqrt(Eu_Norm_xQ);
+
+		// (列)ベクトル"y"を設定
+		sQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			if (i == mQZ) {
+				for (int a = i; a < i + 3; a++)
+				{
+					sQ = sQ + xQ[a] * xQ[a];
+				}
+
+				if (xQ[i] >= 0.0) {
+					sQ = -sqrt(sQ);
+				}
+				else {
+					sQ = sqrt(sQ);
+				}
+
+				yQ[i] = sQ;
+			}
+			else {
+				yQ[i] = 0.0;
+			}
+		}
+
+		//列ベクトル"u"の設定
+		Norm_xyQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			Norm_xyQ = Norm_xyQ + (xQ[i] - yQ[i]) * (xQ[i] - yQ[i]);
+		}
+		Norm_xyQ = sqrt(Norm_xyQ);
+
+		if (Norm_xyQ <= DBL_EPSILON * Eu_Norm_xQ) {
+			for (int i = mQZ; i < mQZ + 3; i++)
+			{
+				uQ[i] = 0.0;
+			}
+		}
+		else {
+			for (int i = mQZ; i < mQZ + 3; i++)
+			{
+				uQ[i] = (xQ[i] - yQ[i]) / Norm_xyQ;
+			}
+		}
+
+		// n次1st_Bulge導入のためのHouseholder反射行列"P_Q"を設定
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Q[i][j] = Unit[i][j];
+			}
+		}
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				P_Qprt[i][j] = 2.0 * uQ[i] * uQ[j];
+				P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+			}
+		}
+
+		// (1st) bulge導入
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				// Hessenberg行列Hと上三角行列Tに左からHouseholder反射行列を適用
+				temp_H = 0.0;
+				temp_T = 0.0;
+				for (int a = 0; a < (2 * N_G) + 1; a++)
+				{
+					temp_H = temp_H + P_Q[i][a] * H[a][j];
+					temp_T = temp_T + P_Q[i][a] * T[a][j];
+				}
+				temp_QH[i][j] = temp_H;
+				temp_QT[i][j] = temp_T;
+			}
+		}
+
+		// Hessenberg行列Hと上三角行列Tの更新(1st bulge導入後)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				H[i][j] = temp_QH[i][j];
+				T[i][j] = temp_QT[i][j];
+			}
+		}
+
+
+		//-------------------------------------------------------------------------
+		// 1st bulge追跡(Bulge Chasing)
+		//-------------------------------------------------------------------------
+
+		//-------------------------------------------------------------------------
+		// (j+2)行目についてHouseholder変換 (T[j+2][j]およびT[j+2][j+1]をzeroに戻す処理)
+
+		// Householder変換対象の行列"T"における行ベクトルから(行)ベクトル"x"を設定
+		Eu_Norm_xZ = 0.0;
+		for (int j = 0; j < 3; j++)
+		{
+			xZ[j] = T[mQZ + 2][mQZ + j];
+			Eu_Norm_xZ = Eu_Norm_xZ + xZ[j] * xZ[j];
+		}
+		Eu_Norm_xZ = sqrt(Eu_Norm_xZ);
+
+		// (行)ベクトル"y"を設定
+		sZ = 0.0;
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			sZ = sZ + xZ[j] * xZ[j];
+		}
+
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			if (j == mQZ + 2) {
+				if (xZ[mQZ + j] >= 0.0) {
+					sZ = -sqrt(sZ);
+				}
+				else {
+					sZ = sqrt(sZ);
+				}
+				yZ[j] = sZ;
+			}
+			else {
+				yZ[j] = 0.0;
+			}
+		}
+
+		// 行ベクトル"u"を設定
+		Norm_xyZ = 0.0;
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			Norm_xyZ = Norm_xyZ + (xZ[j] - yZ[j]) * (xZ[j] - yZ[j]);
+		}
+		Norm_xyZ = sqrt(Norm_xyZ);
+
+		if (Norm_xyZ <= DBL_EPSILON * Eu_Norm_xZ) {
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				uZ[j] = 0.0;
+			}
+		}
+		else {
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				uZ[j] = (xZ[j] - yZ[j]) / Norm_xyZ;
+			}
+		}
+
+		// (1st) bulge追跡(1)のためのHouseholder反射行列"P_Z"を設定
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Z[i][j] = Unit[i][j];
+			}
+		}
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				P_Zprt[i][j] = 2.0 * uZ[i] * uZ[j];
+				P_Z[i][j] = Unit[i][j] - P_Zprt[i][j];
+			}
+		}
+
+		// (1st) bulge追跡(1)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				// Hessenberg行列Hと上三角行列Tに右からHouseholder反射行列を適用
+				temp_H = 0.0;
+				temp_T = 0.0;
+				for (int a = 0; a < (2 * N_G) + 1; a++)
+				{
+					temp_H = temp_H + H[i][a] * P_Z[a][j];
+					temp_T = temp_T + T[i][a] * P_Z[a][j];
+				}
+				temp_QHZ[i][j] = temp_H;
+				temp_QTZ[i][j] = temp_T;
+			}
+		}
+
+		// Hessenberg行列Hと上三角行列Tの更新(1st bulge追跡後)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				H[i][j] = temp_QHZ[i][j];
+				T[i][j] = temp_QTZ[i][j];
+			}
+		}
+
+		//-------------------------------------------------------------------------
+		// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理)
+		T_a = T[mQZ + 1][mQZ];
+		T_b = T[mQZ + 1][mQZ + 1];
+
+		d_T = hypot(T_a, T_b);
+		// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+		if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+			cos_T = 1.0;
+			sin_T = 0.0;
+		}
+		else if (d_T == 0.0) {
+			cos_T = 1.0;
+			sin_T = 0.0;
+		}
+		else {
+			cos_T = T_b / d_T;
+			sin_T = T_a / d_T;
+		}
+
+		//行列"T"の列(j)と列(j+1)に対してGivens回転操作を適用(mQZ行目から最終行までの全行に対して)
+		for (int R = mQZ; R < (2 * N_G) + 1; R++)
+		{
+			temp_T_a = cos_T * T[R][mQZ] - sin_T * T[R][mQZ + 1];
+			temp_T_b = sin_T * T[R][mQZ] + cos_T * T[R][mQZ + 1];
+			// 行列"T"の成分値を更新
+			T[R][mQZ] = temp_T_a;
+			T[R][mQZ + 1] = temp_T_b;
+		}
+
+		//行列"H"の列(j)と列(j+1)に対してGivens回転操作を適用(mQZ行目から最終行までの全行に対して)
+		for (int R = mQZ; R < (2 * N_G) + 1; R++)
+		{
+			temp_H_a = cos_T * H[R][mQZ] - sin_T * H[R][mQZ + 1];
+			temp_H_b = sin_T * H[R][mQZ] + cos_T * H[R][mQZ + 1];
+			// 行列"H"の成分値を更新
+			H[R][mQZ] = temp_H_a;
+			H[R][mQZ + 1] = temp_H_b;
+		}
+
+
+		//-------------------------------------------------------------------------
+		// bulgeを下側へ移す (Householder反射行列"Q_i"を左から適用によるbulgeを下へ移動 & bulge追跡による行列"B"の上三角行列戻し)
+		//-------------------------------------------------------------------------	
+		for (mQ_n = mQZ; mQ_n < ((2 * N_G) + 1) - 2; mQ_n++)
+		{
+			if (mQ_n < ((2 * N_G) + 1) - 3) {
+				// (列)ベクトル"x"を設定
+				Eu_Norm_xHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					xHT[i] = H[i][mQ_n];
+					Eu_Norm_xHT = Eu_Norm_xHT + xHT[i] * xHT[i];
+				}
+				Eu_Norm_xHT = sqrt(Eu_Norm_xHT);
+
+				// (列)ベクトル"y"を設定
+				sHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					if (i == mQ_n) {
+						yHT[i] = xHT[i];
+					}
+					else if (i == mQ_n + 1) {
+						for (int a = i; a < i + 3; a++)
+						{
+							sHT = sHT + xHT[a] * xHT[a];
+						}
+						if (xHT[i] >= 0.0) {
+							sHT = -sqrt(sHT);
+						}
+						else {
+							sHT = sqrt(sHT);
+						}
+
+						yHT[i] = sHT;
+					}
+					else {
+						yHT[i] = 0.0;
+					}
+				}
+
+				// 列ベクトル"u"を計算
+				Norm_xyHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					Norm_xyHT = Norm_xyHT + (xHT[i] - yHT[i]) * (xHT[i] - yHT[i]);
+				}
+				Norm_xyHT = sqrt(Norm_xyHT);
+
+				if (Norm_xyHT <= DBL_EPSILON * Eu_Norm_xHT) {
+					for (int i = mQ_n; i < mQ_n + 4; i++)
+					{
+						uHT[i] = 0.0;
+					}
+				}
+				else {
+					for (int i = mQ_n; i < mQ_n + 4; i++)
+					{
+						uHT[i] = (xHT[i] - yHT[i]) / Norm_xyHT;
+					}
+				}
+
+				// Householder反射行列"Q_n"の構築
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Q[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					for (int j = mQ_n; j < mQ_n + 4; j++)
+					{
+						P_Qprt[i][j] = 2.0 * uHT[i] * uHT[j];
+						P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+					}
+				}
+			}
+
+			else {
+				// (列)ベクトル"x"を設定
+				Eu_Norm_xHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					xHT[i] = H[i][mQ_n];
+					Eu_Norm_xHT = Eu_Norm_xHT + xHT[i] * xHT[i];
+				}
+				Eu_Norm_xHT = sqrt(Eu_Norm_xHT);
+
+				// (列)ベクトル"y"を設定
+				sHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					if (i == mQ_n) {
+						yHT[i] = xHT[i];
+					}
+					else if (i == mQ_n + 1) {
+						for (int a = i; a < i + 2; a++)
+						{
+							sHT = sHT + xHT[a] * xHT[a];
+						}
+						if (xHT[i] >= 0.0) {
+							sHT = -sqrt(sHT);
+						}
+						else {
+							sHT = sqrt(sHT);
+						}
+
+						yHT[i] = sHT;
+					}
+					else {
+						yHT[i] = 0.0;
+					}
+				}
+
+				// 列ベクトル"u"を設定
+				Norm_xyHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					Norm_xyHT = Norm_xyHT + (xHT[i] - yHT[i]) * (xHT[i] - yHT[i]);
+				}
+				Norm_xyHT = sqrt(Norm_xyHT);
+
+				if (Norm_xyHT <= DBL_EPSILON * Eu_Norm_xHT) {
+					for (int i = mQ_n; i < mQ_n + 3; i++)
+					{
+						uHT[i] = 0.0;
+					}
+				}
+				else {
+					for (int i = mQ_n; i < mQ_n + 3; i++)
+					{
+						uHT[i] = (xHT[i] - yHT[i]) / Norm_xyHT;
+					}
+				}
+
+				// Householder反射行列"Q_n"の構築
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Q[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					for (int j = mQ_n; j < mQ_n + 3; j++)
+					{
+						P_Qprt[i][j] = 2.0 * uHT[i] * uHT[j];
+						P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+					}
+				}
+			}
+
+			//---------------------------------------------------------------------
+			// bulgeを下へ追いやる
+			for (int i = 0; i < (2 * N_G) + 1; i++)
+			{
+				for (int j = 0; j < (2 * N_G) + 1; j++)
+				{
+					// Hessenberg行列Hと上三角行列Tに左からHouseholder反射行列を適用
+					temp_H = 0.0;
+					temp_T = 0.0;
+					for (int a = 0; a < (2 * N_G) + 1; a++)
+					{
+						temp_H = temp_H + P_Q[i][a] * H[a][j];
+						temp_T = temp_T + P_Q[i][a] * T[a][j];
+					}
+					temp_QH[i][j] = temp_H;
+					temp_QT[i][j] = temp_T;
+				}
+			}
+
+			// Hessenberg行列Hと上三角行列Tの更新(n次1st_bulge導入後)
+			for (int i = 0; i < (2 * N_G) + 1; i++)
+			{
+				for (int j = 0; j < (2 * N_G) + 1; j++)
+				{
+					H[i][j] = temp_QH[i][j];
+					T[i][j] = temp_QT[i][j];
+				}
+			}
+
+
+			//---------------------------------------------------------------------
+			// bulge追跡(Bulge Chasing)
+			//---------------------------------------------------------------------		
+			if (mQ_n < ((2 * N_G) + 1) - 3) {
+
+				//-----------------------------------------------------------------
+				// (j+2)行目についてHouseholder変換 (T[j+2][j]およびT[j+2][j+1]をzeroに戻す処理)
+				//-----------------------------------------------------------------
+
+				// Householder変換対象の行列"T"における行ベクトルから(行)ベクトル"x"を設定
+				Eu_Norm_xZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					xZ[j] = T[(mQ_n + 1) + 2][j];
+					Eu_Norm_xZ = Eu_Norm_xZ + xZ[j] * xZ[j];
+				}
+				Eu_Norm_xZ = sqrt(Eu_Norm_xZ);
+
+				// (行)ベクトル"y"を設定
+				sZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					sZ = sZ + xZ[j] * xZ[j];
+				}
+
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					if (j == (mQ_n + 1) + 2) {
+						if (xZ[j] >= 0.0) {
+							sZ = -sqrt(sZ);
+						}
+						else {
+							sZ = sqrt(sZ);
+						}
+						yZ[j] = sZ;
+					}
+					else {
+						yZ[j] = 0.0;
+					}
+				}
+
+				// 行ベクトル"u"を設定
+				Norm_xyZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					Norm_xyZ = Norm_xyZ + (xZ[j] - yZ[j]) * (xZ[j] - yZ[j]);
+				}
+				Norm_xyZ = sqrt(Norm_xyZ);
+
+				if (Norm_xyZ <= DBL_EPSILON * Eu_Norm_xZ) {
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						uZ[j] = 0.0;
+					}
+				}
+				else {
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						uZ[j] = (xZ[j] - yZ[j]) / Norm_xyZ;
+					}
+				}
+
+				// bulge追跡(1)のためのHouseholder反射行列"P_Z"を設定
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Z[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = (mQ_n + 1); i < (mQ_n + 1) + 3; i++)
+				{
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						P_Zprt[i][j] = 2.0 * uZ[i] * uZ[j];
+						P_Z[i][j] = Unit[i][j] - P_Zprt[i][j];
+					}
+				}
+
+				// bulge追跡(1)
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						// Hessenberg行列Hと上三角行列Tに右からHouseholder反射行列を適用
+						temp_H = 0.0;
+						temp_T = 0.0;
+						for (int a = 0; a < (2 * N_G) + 1; a++)
+						{
+							temp_H = temp_H + H[i][a] * P_Z[a][j];
+							temp_T = temp_T + T[i][a] * P_Z[a][j];
+						}
+						temp_QHZ[i][j] = temp_H;
+						temp_QTZ[i][j] = temp_T;
+					}
+				}
+
+				// Hessenberg行列Hと上三角行列Tの更新(bulge追跡(1)後)
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						H[i][j] = temp_QHZ[i][j];
+						T[i][j] = temp_QTZ[i][j];
+					}
+				}
+
+
+				//-----------------------------------------------------------------
+				// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理) ※Givens回転行列を右から適用, ここでのjは"j = mQ_n"
+				//-----------------------------------------------------------------
+				T_a = T[(mQ_n + 1) + 1][(mQ_n + 1)];
+				T_b = T[(mQ_n + 1) + 1][(mQ_n + 1) + 1];
+				d_T = hypot(T_a, T_b);
+
+				// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+				if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else if (d_T == 0.0) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else {
+					cos_T = T_b / d_T;
+					sin_T = T_a / d_T;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_T_a = cos_T * T[R][(mQ_n + 1)] - sin_T * T[R][(mQ_n + 1) + 1];
+					temp_T_b = sin_T * T[R][(mQ_n + 1)] + cos_T * T[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					T[R][(mQ_n + 1)] = temp_T_a;
+					T[R][(mQ_n + 1) + 1] = temp_T_b;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_H_a = cos_T * H[R][(mQ_n + 1)] - sin_T * H[R][(mQ_n + 1) + 1];
+					temp_H_b = sin_T * H[R][(mQ_n + 1)] + cos_T * H[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					H[R][(mQ_n + 1)] = temp_H_a;
+					H[R][(mQ_n + 1) + 1] = temp_H_b;
+				}
+			}
+
+			else {
+
+				//-----------------------------------------------------------------
+				// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理) ※Givens回転行列を右から適用, ここでのjは"j = mQ_n"
+				//-----------------------------------------------------------------
+				T_a = T[(mQ_n + 1) + 1][(mQ_n + 1)];
+				T_b = T[(mQ_n + 1) + 1][(mQ_n + 1) + 1];
+				d_T = hypot(T_a, T_b);
+
+				// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+				if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else if (d_T == 0.0) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else {
+					cos_T = T_b / d_T;
+					sin_T = T_a / d_T;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_T_a = cos_T * T[R][(mQ_n + 1)] - sin_T * T[R][(mQ_n + 1) + 1];
+					temp_T_b = sin_T * T[R][(mQ_n + 1)] + cos_T * T[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					T[R][(mQ_n + 1)] = temp_T_a;
+					T[R][(mQ_n + 1) + 1] = temp_T_b;
+				}
+
+				//行列"H"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_H_a = cos_T * H[R][(mQ_n + 1)] - sin_T * H[R][(mQ_n + 1) + 1];
+					temp_H_b = sin_T * H[R][(mQ_n + 1)] + cos_T * H[R][(mQ_n + 1) + 1];
+					// 行列"H"の成分値を更新
+					H[R][(mQ_n + 1)] = temp_H_a;
+					H[R][(mQ_n + 1) + 1] = temp_H_b;
+				}
+			}
+
+
+		}
+
+		count = count + 1;
+
+		if (count > MaxCount) {
+			break;
+		}
+		else {
+			if (fabs(H[mQZ + 1][mQZ]) < DBL_EPSILON * (fabs(H[mQZ][mQZ]) + fabs(H[mQZ + 1][mQZ + 1]))) {
+				break;
+			}
+			else {
+				continue;
+			}
+		}
+
+	}
+
+
+	//*************************************************************************
+	// 途中結果
+	printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	{
+		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+		{
+			printf("%.16f\t", H[i_cmp][j_cmp]);
+		}
+		printf("\n");
+	}
+	printf("\n");
+
+	printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	{
+		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+		{
+			printf("%.16f\t", T[i_cmp][j_cmp]);
+		}
+		printf("\n");
+	}
+	printf("\n");
+	printf("\n");
+	printf("\n");
+	//*************************************************************************
+
+
+
+
+	//-------------------------------------------------------------------------
+	// Next bulge導入 & bulge追跡
+	//-------------------------------------------------------------------------
+	printf("[mQZ = 1]\n\n");
+
+	count = 0;
+	mQZ = 1;
+
+	while (fabs(H[mQZ + 1][mQZ]) > DBL_EPSILON * (fabs(H[mQZ][mQZ]) + fabs(H[mQZ + 1][mQZ + 1])))
+	{
+		temp_a10a = ((H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ])) * ((H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[mQZ][mQZ] / T[mQZ][mQZ]));
+		temp_a10b = (H[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]);
+		temp_a10c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]) * (H[mQZ][mQZ] / T[mQZ][mQZ]);
+
+		temp_a20a = (H[2 * N_G - 1][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]);
+		temp_a20b = (H[2 * N_G][2 * N_G] / T[2 * N_G][2 * N_G]) - (H[mQZ][mQZ] / T[mQZ][mQZ]);
+		temp_a20c = (H[2 * N_G][2 * N_G - 1] / T[2 * N_G - 1][2 * N_G - 1]) * (T[2 * N_G - 1][2 * N_G] / T[2 * N_G][2 * N_G]);
+
+		a10 = (temp_a10a - temp_a10b + temp_a10c) * (T[mQZ][mQZ] / H[mQZ + 1][mQZ]) + (H[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]) * (T[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]);
+		a20 = (H[mQZ + 1][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - (H[mQZ][mQZ] / T[mQZ][mQZ]) - (H[mQZ + 1][mQZ] / T[mQZ][mQZ]) * (T[mQZ][mQZ + 1] / T[mQZ + 1][mQZ + 1]) - temp_a20a - temp_a20b + temp_a20c;
+		a30 = H[mQZ + 2][mQZ + 1] / T[mQZ + 1][mQZ + 1];
+
+		// Householder反射行列の初期化
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Qprt[i][j] = 0.0;
+				P_Q[i][j] = 0.0;
+			}
+		}
+
+		// (列)ベクトル"x"を設定
+		Eu_Norm_xQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			if (i == mQZ) {
+				xQ[i] = a10;
+			}
+			else if (i == mQZ + 1) {
+				xQ[i] = a20;
+			}
+			else if (i == mQZ + 2) {
+				xQ[i] = a30;
+			}
+
+			Eu_Norm_xQ = Eu_Norm_xQ + xQ[i] * xQ[i];
+		}
+		Eu_Norm_xQ = sqrt(Eu_Norm_xQ);
+
+		// (列)ベクトル"y"を設定
+		sQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			if (i == mQZ) {
+				for (int a = i; a < i + 3; a++)
+				{
+					sQ = sQ + xQ[a] * xQ[a];
+				}
+
+				if (xQ[i] >= 0.0) {
+					sQ = -sqrt(sQ);
+				}
+				else {
+					sQ = sqrt(sQ);
+				}
+
+				yQ[i] = sQ;
+			}
+			else {
+				yQ[i] = 0.0;
+			}
+		}
+
+		//列ベクトル"u"の設定
+		Norm_xyQ = 0.0;
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			Norm_xyQ = Norm_xyQ + (xQ[i] - yQ[i]) * (xQ[i] - yQ[i]);
+		}
+		Norm_xyQ = sqrt(Norm_xyQ);
+
+		if (Norm_xyQ <= DBL_EPSILON * Eu_Norm_xQ) {
+			for (int i = mQZ; i < mQZ + 3; i++)
+			{
+				uQ[i] = 0.0;
+			}
+		}
+		else {
+			for (int i = mQZ; i < mQZ + 3; i++)
+			{
+				uQ[i] = (xQ[i] - yQ[i]) / Norm_xyQ;
+			}
+		}
+
+		// n次1st_Bulge導入のためのHouseholder反射行列"P_Q"を設定
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Q[i][j] = Unit[i][j];
+			}
+		}
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				P_Qprt[i][j] = 2.0 * uQ[i] * uQ[j];
+				P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+			}
+		}
+
+		// (1st) bulge導入
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				// Hessenberg行列Hと上三角行列Tに左からHouseholder反射行列を適用
+				temp_H = 0.0;
+				temp_T = 0.0;
+				for (int a = 0; a < (2 * N_G) + 1; a++)
+				{
+					temp_H = temp_H + P_Q[i][a] * H[a][j];
+					temp_T = temp_T + P_Q[i][a] * T[a][j];
+				}
+				temp_QH[i][j] = temp_H;
+				temp_QT[i][j] = temp_T;
+			}
+		}
+
+		// Hessenberg行列Hと上三角行列Tの更新(1st bulge導入後)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				H[i][j] = temp_QH[i][j];
+				T[i][j] = temp_QT[i][j];
+			}
+		}
+
+
+		//-------------------------------------------------------------------------
+		// 1st bulge追跡(Bulge Chasing)
+		//-------------------------------------------------------------------------
+
+		//-------------------------------------------------------------------------
+		// (j+2)行目についてHouseholder変換 (T[j+2][j]およびT[j+2][j+1]をzeroに戻す処理)
+
+		// Householder変換対象の行列"T"における行ベクトルから(行)ベクトル"x"を設定
+		Eu_Norm_xZ = 0.0;
+		for (int j = 0; j < 3; j++)
+		{
+			xZ[j] = T[mQZ + 2][mQZ + j];
+			Eu_Norm_xZ = Eu_Norm_xZ + xZ[j] * xZ[j];
+		}
+		Eu_Norm_xZ = sqrt(Eu_Norm_xZ);
+
+		// (行)ベクトル"y"を設定
+		sZ = 0.0;
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			sZ = sZ + xZ[j] * xZ[j];
+		}
+
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			if (j == mQZ + 2) {
+				if (xZ[mQZ + j] >= 0.0) {
+					sZ = -sqrt(sZ);
+				}
+				else {
+					sZ = sqrt(sZ);
+				}
+				yZ[j] = sZ;
+			}
+			else {
+				yZ[j] = 0.0;
+			}
+		}
+
+		// 行ベクトル"u"を設定
+		Norm_xyZ = 0.0;
+		for (int j = mQZ; j < mQZ + 3; j++)
+		{
+			Norm_xyZ = Norm_xyZ + (xZ[j] - yZ[j]) * (xZ[j] - yZ[j]);
+		}
+		Norm_xyZ = sqrt(Norm_xyZ);
+
+		if (Norm_xyZ <= DBL_EPSILON * Eu_Norm_xZ) {
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				uZ[j] = 0.0;
+			}
+		}
+		else {
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				uZ[j] = (xZ[j] - yZ[j]) / Norm_xyZ;
+			}
+		}
+
+		// (1st) bulge追跡(1)のためのHouseholder反射行列"P_Z"を設定
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				P_Z[i][j] = Unit[i][j];
+			}
+		}
+		for (int i = mQZ; i < mQZ + 3; i++)
+		{
+			for (int j = mQZ; j < mQZ + 3; j++)
+			{
+				P_Zprt[i][j] = 2.0 * uZ[i] * uZ[j];
+				P_Z[i][j] = Unit[i][j] - P_Zprt[i][j];
+			}
+		}
+
+		// (1st) bulge追跡(1)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				// Hessenberg行列Hと上三角行列Tに右からHouseholder反射行列を適用
+				temp_H = 0.0;
+				temp_T = 0.0;
+				for (int a = 0; a < (2 * N_G) + 1; a++)
+				{
+					temp_H = temp_H + H[i][a] * P_Z[a][j];
+					temp_T = temp_T + T[i][a] * P_Z[a][j];
+				}
+				temp_QHZ[i][j] = temp_H;
+				temp_QTZ[i][j] = temp_T;
+			}
+		}
+
+		// Hessenberg行列Hと上三角行列Tの更新(1st bulge追跡後)
+		for (int i = 0; i < (2 * N_G) + 1; i++)
+		{
+			for (int j = 0; j < (2 * N_G) + 1; j++)
+			{
+				H[i][j] = temp_QHZ[i][j];
+				T[i][j] = temp_QTZ[i][j];
+			}
+		}
+
+		//-------------------------------------------------------------------------
+		// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理)
+		T_a = T[mQZ + 1][mQZ];
+		T_b = T[mQZ + 1][mQZ + 1];
+
+		d_T = hypot(T_a, T_b);
+		// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+		if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+			cos_T = 1.0;
+			sin_T = 0.0;
+		}
+		else if (d_T == 0.0) {
+			cos_T = 1.0;
+			sin_T = 0.0;
+		}
+		else {
+			cos_T = T_b / d_T;
+			sin_T = T_a / d_T;
+		}
+
+		//行列"T"の列(j)と列(j+1)に対してGivens回転操作を適用(mQZ行目から最終行までの全行に対して)
+		for (int R = mQZ; R < (2 * N_G) + 1; R++)
+		{
+			temp_T_a = cos_T * T[R][mQZ] - sin_T * T[R][mQZ + 1];
+			temp_T_b = sin_T * T[R][mQZ] + cos_T * T[R][mQZ + 1];
+			// 行列"T"の成分値を更新
+			T[R][mQZ] = temp_T_a;
+			T[R][mQZ + 1] = temp_T_b;
+		}
+
+		//行列"H"の列(j)と列(j+1)に対してGivens回転操作を適用(mQZ行目から最終行までの全行に対して)
+		for (int R = mQZ; R < (2 * N_G) + 1; R++)
+		{
+			temp_H_a = cos_T * H[R][mQZ] - sin_T * H[R][mQZ + 1];
+			temp_H_b = sin_T * H[R][mQZ] + cos_T * H[R][mQZ + 1];
+			// 行列"H"の成分値を更新
+			H[R][mQZ] = temp_H_a;
+			H[R][mQZ + 1] = temp_H_b;
+		}
+
+
+		//-------------------------------------------------------------------------
+		// bulgeを下側へ移す (Householder反射行列"Q_i"を左から適用によるbulgeを下へ移動 & bulge追跡による行列"B"の上三角行列戻し)
+		//-------------------------------------------------------------------------	
+		for (mQ_n = mQZ; mQ_n < ((2 * N_G) + 1) - 2; mQ_n++)
+		{
+			if (mQ_n < ((2 * N_G) + 1) - 3) {
+				// (列)ベクトル"x"を設定
+				Eu_Norm_xHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					xHT[i] = H[i][mQ_n];
+					Eu_Norm_xHT = Eu_Norm_xHT + xHT[i] * xHT[i];
+				}
+				Eu_Norm_xHT = sqrt(Eu_Norm_xHT);
+
+				// (列)ベクトル"y"を設定
+				sHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					if (i == mQ_n) {
+						yHT[i] = xHT[i];
+					}
+					else if (i == mQ_n + 1) {
+						for (int a = i; a < i + 3; a++)
+						{
+							sHT = sHT + xHT[a] * xHT[a];
+						}
+						if (xHT[i] >= 0.0) {
+							sHT = -sqrt(sHT);
+						}
+						else {
+							sHT = sqrt(sHT);
+						}
+
+						yHT[i] = sHT;
+					}
+					else {
+						yHT[i] = 0.0;
+					}
+				}
+
+				// 列ベクトル"u"を計算
+				Norm_xyHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					Norm_xyHT = Norm_xyHT + (xHT[i] - yHT[i]) * (xHT[i] - yHT[i]);
+				}
+				Norm_xyHT = sqrt(Norm_xyHT);
+
+				if (Norm_xyHT <= DBL_EPSILON * Eu_Norm_xHT) {
+					for (int i = mQ_n; i < mQ_n + 4; i++)
+					{
+						uHT[i] = 0.0;
+					}
+				}
+				else {
+					for (int i = mQ_n; i < mQ_n + 4; i++)
+					{
+						uHT[i] = (xHT[i] - yHT[i]) / Norm_xyHT;
+					}
+				}
+
+				// Householder反射行列"Q_n"の構築
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Q[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = mQ_n; i < mQ_n + 4; i++)
+				{
+					for (int j = mQ_n; j < mQ_n + 4; j++)
+					{
+						P_Qprt[i][j] = 2.0 * uHT[i] * uHT[j];
+						P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+					}
+				}
+			}
+
+			else {
+				// (列)ベクトル"x"を設定
+				Eu_Norm_xHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					xHT[i] = H[i][mQ_n];
+					Eu_Norm_xHT = Eu_Norm_xHT + xHT[i] * xHT[i];
+				}
+				Eu_Norm_xHT = sqrt(Eu_Norm_xHT);
+
+				// (列)ベクトル"y"を設定
+				sHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					if (i == mQ_n) {
+						yHT[i] = xHT[i];
+					}
+					else if (i == mQ_n + 1) {
+						for (int a = i; a < i + 2; a++)
+						{
+							sHT = sHT + xHT[a] * xHT[a];
+						}
+						if (xHT[i] >= 0.0) {
+							sHT = -sqrt(sHT);
+						}
+						else {
+							sHT = sqrt(sHT);
+						}
+
+						yHT[i] = sHT;
+					}
+					else {
+						yHT[i] = 0.0;
+					}
+				}
+
+				// 列ベクトル"u"を設定
+				Norm_xyHT = 0.0;
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					Norm_xyHT = Norm_xyHT + (xHT[i] - yHT[i]) * (xHT[i] - yHT[i]);
+				}
+				Norm_xyHT = sqrt(Norm_xyHT);
+
+				if (Norm_xyHT <= DBL_EPSILON * Eu_Norm_xHT) {
+					for (int i = mQ_n; i < mQ_n + 3; i++)
+					{
+						uHT[i] = 0.0;
+					}
+				}
+				else {
+					for (int i = mQ_n; i < mQ_n + 3; i++)
+					{
+						uHT[i] = (xHT[i] - yHT[i]) / Norm_xyHT;
+					}
+				}
+
+				// Householder反射行列"Q_n"の構築
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Q[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = mQ_n; i < mQ_n + 3; i++)
+				{
+					for (int j = mQ_n; j < mQ_n + 3; j++)
+					{
+						P_Qprt[i][j] = 2.0 * uHT[i] * uHT[j];
+						P_Q[i][j] = Unit[i][j] - P_Qprt[i][j];
+					}
+				}
+			}
+
+			//---------------------------------------------------------------------
+			// bulgeを下へ追いやる
+			for (int i = 0; i < (2 * N_G) + 1; i++)
+			{
+				for (int j = 0; j < (2 * N_G) + 1; j++)
+				{
+					// Hessenberg行列Hと上三角行列Tに左からHouseholder反射行列を適用
+					temp_H = 0.0;
+					temp_T = 0.0;
+					for (int a = 0; a < (2 * N_G) + 1; a++)
+					{
+						temp_H = temp_H + P_Q[i][a] * H[a][j];
+						temp_T = temp_T + P_Q[i][a] * T[a][j];
+					}
+					temp_QH[i][j] = temp_H;
+					temp_QT[i][j] = temp_T;
+				}
+			}
+
+			// Hessenberg行列Hと上三角行列Tの更新(n次1st_bulge導入後)
+			for (int i = 0; i < (2 * N_G) + 1; i++)
+			{
+				for (int j = 0; j < (2 * N_G) + 1; j++)
+				{
+					H[i][j] = temp_QH[i][j];
+					T[i][j] = temp_QT[i][j];
+				}
+			}
+
+
+			//---------------------------------------------------------------------
+			// bulge追跡(Bulge Chasing)
+			//---------------------------------------------------------------------		
+			if (mQ_n < ((2 * N_G) + 1) - 3) {
+
+				//-----------------------------------------------------------------
+				// (j+2)行目についてHouseholder変換 (T[j+2][j]およびT[j+2][j+1]をzeroに戻す処理)
+				//-----------------------------------------------------------------
+
+				// Householder変換対象の行列"T"における行ベクトルから(行)ベクトル"x"を設定
+				Eu_Norm_xZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					xZ[j] = T[(mQ_n + 1) + 2][j];
+					Eu_Norm_xZ = Eu_Norm_xZ + xZ[j] * xZ[j];
+				}
+				Eu_Norm_xZ = sqrt(Eu_Norm_xZ);
+
+				// (行)ベクトル"y"を設定
+				sZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					sZ = sZ + xZ[j] * xZ[j];
+				}
+
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					if (j == (mQ_n + 1) + 2) {
+						if (xZ[j] >= 0.0) {
+							sZ = -sqrt(sZ);
+						}
+						else {
+							sZ = sqrt(sZ);
+						}
+						yZ[j] = sZ;
+					}
+					else {
+						yZ[j] = 0.0;
+					}
+				}
+
+				// 行ベクトル"u"を設定
+				Norm_xyZ = 0.0;
+				for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+				{
+					Norm_xyZ = Norm_xyZ + (xZ[j] - yZ[j]) * (xZ[j] - yZ[j]);
+				}
+				Norm_xyZ = sqrt(Norm_xyZ);
+
+				if (Norm_xyZ <= DBL_EPSILON * Eu_Norm_xZ) {
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						uZ[j] = 0.0;
+					}
+				}
+				else {
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						uZ[j] = (xZ[j] - yZ[j]) / Norm_xyZ;
+					}
+				}
+
+				// bulge追跡(1)のためのHouseholder反射行列"P_Z"を設定
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						P_Z[i][j] = Unit[i][j];
+					}
+				}
+				for (int i = (mQ_n + 1); i < (mQ_n + 1) + 3; i++)
+				{
+					for (int j = (mQ_n + 1); j < (mQ_n + 1) + 3; j++)
+					{
+						P_Zprt[i][j] = 2.0 * uZ[i] * uZ[j];
+						P_Z[i][j] = Unit[i][j] - P_Zprt[i][j];
+					}
+				}
+
+				// bulge追跡(1)
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						// Hessenberg行列Hと上三角行列Tに右からHouseholder反射行列を適用
+						temp_H = 0.0;
+						temp_T = 0.0;
+						for (int a = 0; a < (2 * N_G) + 1; a++)
+						{
+							temp_H = temp_H + H[i][a] * P_Z[a][j];
+							temp_T = temp_T + T[i][a] * P_Z[a][j];
+						}
+						temp_QHZ[i][j] = temp_H;
+						temp_QTZ[i][j] = temp_T;
+					}
+				}
+
+				// Hessenberg行列Hと上三角行列Tの更新(bulge追跡(1)後)
+				for (int i = 0; i < (2 * N_G) + 1; i++)
+				{
+					for (int j = 0; j < (2 * N_G) + 1; j++)
+					{
+						H[i][j] = temp_QHZ[i][j];
+						T[i][j] = temp_QTZ[i][j];
+					}
+				}
+
+
+				//-----------------------------------------------------------------
+				// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理) ※Givens回転行列を右から適用, ここでのjは"j = mQ_n"
+				//-----------------------------------------------------------------
+				T_a = T[(mQ_n + 1) + 1][(mQ_n + 1)];
+				T_b = T[(mQ_n + 1) + 1][(mQ_n + 1) + 1];
+				d_T = hypot(T_a, T_b);
+
+				// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+				if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else if (d_T == 0.0) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else {
+					cos_T = T_b / d_T;
+					sin_T = T_a / d_T;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_T_a = cos_T * T[R][(mQ_n + 1)] - sin_T * T[R][(mQ_n + 1) + 1];
+					temp_T_b = sin_T * T[R][(mQ_n + 1)] + cos_T * T[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					T[R][(mQ_n + 1)] = temp_T_a;
+					T[R][(mQ_n + 1) + 1] = temp_T_b;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_H_a = cos_T * H[R][(mQ_n + 1)] - sin_T * H[R][(mQ_n + 1) + 1];
+					temp_H_b = sin_T * H[R][(mQ_n + 1)] + cos_T * H[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					H[R][(mQ_n + 1)] = temp_H_a;
+					H[R][(mQ_n + 1) + 1] = temp_H_b;
+				}
+			}
+
+			else {
+
+				//-----------------------------------------------------------------
+				// (j+1)行目についてGivens回転操作 (T[j+1][j]をzeroに戻す処理) ※Givens回転行列を右から適用, ここでのjは"j = mQ_n"
+				//-----------------------------------------------------------------
+				T_a = T[(mQ_n + 1) + 1][(mQ_n + 1)];
+				T_b = T[(mQ_n + 1) + 1][(mQ_n + 1) + 1];
+				d_T = hypot(T_a, T_b);
+
+				// Givens回転操作におけるcos計算およびsin計算のための条件分岐
+				if (fabs(T_a) < DBL_EPSILON * (fabs(T_a) + fabs(T_b))) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else if (d_T == 0.0) {
+					cos_T = 1.0;
+					sin_T = 0.0;
+				}
+				else {
+					cos_T = T_b / d_T;
+					sin_T = T_a / d_T;
+				}
+
+				//行列"T"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_T_a = cos_T * T[R][(mQ_n + 1)] - sin_T * T[R][(mQ_n + 1) + 1];
+					temp_T_b = sin_T * T[R][(mQ_n + 1)] + cos_T * T[R][(mQ_n + 1) + 1];
+					// 行列"T"の成分値を更新
+					T[R][(mQ_n + 1)] = temp_T_a;
+					T[R][(mQ_n + 1) + 1] = temp_T_b;
+				}
+
+				//行列"H"の列(j)と列(j+1)に対してGivens回転操作を右から適用((j+1)行目から最終行までの全行に対して)
+				for (int R = (mQ_n + 1); R < (2 * N_G) + 1; R++)
+				{
+					temp_H_a = cos_T * H[R][(mQ_n + 1)] - sin_T * H[R][(mQ_n + 1) + 1];
+					temp_H_b = sin_T * H[R][(mQ_n + 1)] + cos_T * H[R][(mQ_n + 1) + 1];
+					// 行列"H"の成分値を更新
+					H[R][(mQ_n + 1)] = temp_H_a;
+					H[R][(mQ_n + 1) + 1] = temp_H_b;
+				}
+			}
+
+
+		}
+
+
+		//*************************************************************************
+		// 途中結果
+		printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+		for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+		{
+			for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+			{
+				printf("%.16f\t", H[i_cmp][j_cmp]);
+			}
+			printf("\n");
+		}
+		printf("\n");
+
+		printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+		for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+		{
+			for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+			{
+				printf("%.16f\t", T[i_cmp][j_cmp]);
+			}
+			printf("\n");
+		}
+		printf("\n");
+		printf("\n");
+		//printf("\n");
+		//*************************************************************************
+
+
+		count = count + 1;
+
+		if (count > MaxCount) {
+
+			//*************************************************************************
+			// 途中結果
+			printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+			for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+			{
+				for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+				{
+					printf("%.16f\t", H[i_cmp][j_cmp]);
+				}
+				printf("\n");
+			}
+			printf("\n");
+
+			printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+			for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+			{
+				for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+				{
+					printf("%.16f\t", T[i_cmp][j_cmp]);
+				}
+				printf("\n");
+			}
+			printf("\n");
+			printf("\n");
+			printf("\n");
+			//*************************************************************************
+			
+			break;
+		}
+		else {
+			if (fabs(H[mQZ + 1][mQZ]) < DBL_EPSILON * (fabs(H[mQZ][mQZ]) + fabs(H[mQZ + 1][mQZ + 1]))) {
+				
+				//*************************************************************************
+				// 途中結果
+				printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+				for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+				{
+					for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+					{
+						printf("%.16f\t", H[i_cmp][j_cmp]);
+					}
+					printf("\n");
+				}
+				printf("\n");
+
+				printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+				for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+				{
+					for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+					{
+						printf("%.16f\t", T[i_cmp][j_cmp]);
+					}
+					printf("\n");
+				}
+				printf("\n");
+				printf("\n");
+				printf("\n");
+				//*************************************************************************				
+				
+				break;
+			}
+			else {
+				
+				//*************************************************************************
+				// 途中結果
+				printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+				for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+				{
+					for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+					{
+						printf("%.16f\t", H[i_cmp][j_cmp]);
+					}
+					printf("\n");
+				}
+				printf("\n");
+
+				printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+				for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+				{
+					for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+					{
+						printf("%.16f\t", T[i_cmp][j_cmp]);
+					}
+					printf("\n");
+				}
+				printf("\n");
+				printf("\n");
+				//printf("\n");
+				//*************************************************************************				
+				
+				continue;
+			}
+		}
+
+	}
+
+
+
+
+
+	////*************************************************************************
+	//// 途中結果
+	//printf("Applied Z_n from right side in Hessenberg Matrix \"H\" (count = %d)\n", count);
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", H[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+
+	//printf("Applied Z_n from right side in Upper Triangular Matrix \"T\" (count = %d)\n", count);
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", T[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+	//printf("\n");
+	//printf("\n");
+	////*************************************************************************
+
+
+	//if (count >= MaxCount) {
+	//	printf("reached maximun count %d\n", count);
+	//	printf("\n");
+
+	//	//*************************************************************************
+	//	// 途中結果
+	//	printf("Applied Z_n from right side in Hessenberg Matrix \"H\"\n");
+	//	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//	{
+	//		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//		{
+	//			printf("%.16f\t", H[i_cmp][j_cmp]);
+	//		}
+	//		printf("\n");
+	//	}
+	//	printf("\n");
+
+	//	printf("Applied Z_n from right side in Upper Triangular Matrix \"T\"\n");
+	//	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//	{
+	//		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//		{
+	//			printf("%.16f\t", T[i_cmp][j_cmp]);
+	//		}
+	//		printf("\n");
+	//	}
+	//	printf("\n");
+	//	printf("\n");
+	//	printf("\n");
+	//	//*************************************************************************
+	//}
+
+	//else {
+	//	printf("count = %d\n", count);
+	//	printf("\n");
+	//	
+	//	//*************************************************************************
+	//	// 途中結果
+	//	printf("Applied Z_n from right side in Hessenberg Matrix \"H\"\n");
+	//	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//	{
+	//		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//		{
+	//			printf("%.16f\t", H[i_cmp][j_cmp]);
+	//		}
+	//		printf("\n");
+	//	}
+	//	printf("\n");
+
+	//	printf("Applied Z_n from right side in Upper Triangular Matrix \"T\"\n");
+	//	for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//	{
+	//		for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//		{
+	//			printf("%.16f\t", T[i_cmp][j_cmp]);
+	//		}
+	//		printf("\n");
+	//	}
+	//	printf("\n");
+	//	printf("\n");
+	//	printf("\n");
+	//	//*************************************************************************
+	//}
+
+
+	////*************************************************************************
+	//// 途中結果
+	//printf("Applied Z_n from right side in Hessenberg Matrix \"H\"\n");
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", H[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+
+	//printf("Applied Z_n from right side in Upper Triangular Matrix \"T\"\n");
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", T[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+	//printf("\n");
+	//printf("\n");
+	////*************************************************************************
+
+
+	////*************************************************************************
+	//// 途中結果
+	//printf("Applied Z_n from right side in Hessenberg Matrix \"H\"\n");
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", H[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+
+	//printf("Applied Z_n from right side in Upper Triangular Matrix \"T\"\n");
+	//for (int i_cmp = 0; i_cmp < (2 * N_G) + 1; i_cmp++)
+	//{
+	//	for (int j_cmp = 0; j_cmp < (2 * N_G) + 1; j_cmp++)
+	//	{
+	//		printf("%.16f\t", T[i_cmp][j_cmp]);
+	//	}
+	//	printf("\n");
+	//}
+	//printf("\n");
+	//printf("\n");
+	//printf("\n");
+	////*************************************************************************
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	//=========================================================================
+	// Rerease dynamic memories
+	//=========================================================================
+
+	//-------------------------------------------------------------------------
+	// Dynamic Memories for Householder Transformation
+	//-------------------------------------------------------------------------
+	// 2-demension dynamic memories
+	for (int i = 0; i < (2 * N_G) + 1; i++)
+	{
+		free(A[i]);
+		free(AR[i]);
+		free(Unit[i]);
+		free(A_C[i]);
+		free(AR_C[i]);
+		free(Unit_C[i]);
+
+		free(H[i]);
+		free(H_C[i]);
+		free(T[i]);
+		free(T_C[i]);
+
+		free(P_Qprt[i]);
+		free(P_Q[i]);
+		free(P_Qprt_C[i]);
+		free(P_Q_C[i]);
+		free(P_Zprt[i]);
+		free(P_Z[i]);
+		free(P_Zprt_C[i]);
+		free(P_Z_C[i]);
+
+		free(temp_P[i]);
+		free(temp_QH[i]);
+		free(temp_QHZ[i]);
+		free(temp_QT[i]);
+		free(temp_QTZ[i]);
+		free(temp_P_C[i]);
+		free(temp_QH_C[i]);
+		free(temp_QHZ_C[i]);
+		free(temp_QT_C[i]);
+		free(temp_QTZ_C[i]);
+	}
+	free(A);
+	free(AR);
+	free(Unit);
+	free(A_C);
+	free(AR_C);
+	free(Unit_C);
+
+	free(H);
+	free(H_C);
+	free(T);
+	free(T_C);
+
+	free(P_Qprt);
+	free(P_Q);
+	free(P_Qprt_C);
+	free(P_Q_C);
+	free(P_Zprt);
+	free(P_Z);
+	free(P_Zprt_C);
+	free(P_Z_C);
+
+	free(temp_P);
+	free(temp_QH);
+	free(temp_QHZ);
+	free(temp_QT);
+	free(temp_QTZ);
+	free(temp_P_C);
+	free(temp_QH_C);
+	free(temp_QHZ_C);
+	free(temp_QT_C);
+	free(temp_QTZ_C);
+
+	// 1-demension dynamic memories
+	free(xQ);
+	free(yQ);
+	free(uQ);
+	free(xQ_C);
+	free(yQ_C);
+	free(uQ_C);
+	free(xHT);
+	free(yHT);
+	free(uHT);
+	free(xHT_C);
+	free(yHT_C);
+	free(uHT_C);
+	free(xZ);
+	free(yZ);
+	free(uZ);
+	free(xZ_C);
+	free(yZ_C);
+	free(uZ_C);
+
+
+	//-------------------------------------------------------------------------
+	// Dynamic Memories for Francis QR method
+	//-------------------------------------------------------------------------
+
+
+
+
+
+	return 0;
+}

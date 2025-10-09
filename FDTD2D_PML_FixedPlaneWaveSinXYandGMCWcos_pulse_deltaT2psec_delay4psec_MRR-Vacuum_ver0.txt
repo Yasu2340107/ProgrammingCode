@@ -1,0 +1,1408 @@
+#define _CRT_SECURE_NO_WARNINGS								// scanf関数を使用するため定義
+#define _USE_MATH_DEFINES									// 円周率 PI = 3.14159...を"M_PI"として使用するための定義
+#define GNUPLOT "C:/gnuplot/bin/gnuplot.exe -persist"		// Graph software ("GNUPLOT") の .exe ファイルの Address を定義, および "-persist" は gnuplot が直ぐに閉じないようにするため
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <complex.h>
+
+
+//============================================================================================================================================================================
+// Si waveguide with race-track Micro-Ring Resonator (MRR)における電磁波伝播_PML吸収境界条件を用いたFDTD法 "定常波(2次元) Sine Wave" ※(媒質(Si waveguide with race-track MRR)/真空)
+//============================================================================================================================================================================
+
+
+int main(void)
+{
+	//========================================================================================================================================================================
+	//(1). 物理定数の設定
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 真空における物性値
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double c0 = 2.99792458 * pow(10.0, 8.0);																// 真空における光の速さ [m/sec]
+	double l0 = 1.530 * pow(10.0, -6.0);																	// 真空における光の波長 [m]
+
+	//double l0 = 1.530 * pow(10.0, -6.0);																	// 真空における光の波長 [m]
+
+	double f0 = c0 / l0;																					// 真空における光の周波数 [Hz]
+	double k0 = (2.0 * M_PI) / l0;																			// 真空における波数 [rad/m]
+	double w0 = 2.0 * M_PI * f0;																			// 真空における角周波数 [rad/sec]
+	double PerE0 = 8.854187816 * pow(10.0, -12.0);															// 真空の誘電率 [F/m]
+	double PerM0 = 4.0 * M_PI * pow(10.0, -7.0);															// 真空の透磁率 1.2566370614 * pow(10.0, -6.0) [H/m (= N/A^2)]
+	double Z0 = sqrt(PerM0 / PerE0);																		// 真空における波動Impedance
+
+	double l1 = 1.522 * pow(10.0, -6.0);
+	double l2 = 1.552 * pow(10.0, -6.0);
+	double f1 = c0 / l1;
+	double f2 = c0 / l2;
+	double w1 = 2.0 * M_PI * f1;
+	double w2 = 2.0 * M_PI * f2;
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 媒質(Si)における物性値
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	//double nSi = 3.4835;																					// 媒質(Si)の屈折率(波長1.5umにおけるSi薄膜の屈折率)
+	double nSi = 3.46;																						// 媒質(Si)の屈折率(波長1.5umにおけるSi薄膜の屈折率)
+	double KSi = 2.1833 * pow(10.0, -9.0);																	// 媒質(Si)の消衰係数(波長1.5umにおけるSi薄膜の消衰係数)
+	double cSi = c0 / nSi;																					// 媒質(Si)中における光の速さ [m/sec]
+	double lSi = cSi / f0;																					// 媒質(Si)中における光の波長(linear opticsの場合で考える) [m] ※linear opticsの場合: 媒質中も真空中も周波数は等しい(周波数は媒質中でも不変), nonlinear opticsの場合: 非線形現象により波長が変化する
+	double PerESi = 11.8 * PerE0;																			// 媒質(Si)の誘電率 [F/m] ※比誘電率11.8で計算
+	double PerMSi = 1.0 * PerM0;																			// 媒質(Si)の透磁率 [H/m] ※非磁性体として比透磁率1.0で計算
+	double ZSi = sqrt(PerMSi / PerESi);																		// 媒質(Si)における波動Impedance
+	double SigmaSi = 1.602176634 * pow(10.0, -19.0) * pow(10.0, 20.0) * (1400.0 * pow(10.0, -4.0));			// 媒質(Si)の導電率 [S/m] ※n型半導体として (電気素量 [C]) * (電子濃度 [m-3]) * (電子移動度 [m2/Vsec])
+
+	_Dcomplex NSi = _Cbuild(nSi, KSi);																		// 媒質(Si)の複素屈折率 = (屈折率) + (消衰係数) * 虚数i
+	_Dcomplex kSi = _Cmulcr(NSi, w0 / cSi);																	// 媒質(Si)における波数 = (媒質(Si)の複素屈折率) * (周波数) / (媒質(Si)中における光の速さ)
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 媒質(SiO2)における物性値
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double nSiOx = 1.4603;																					// 媒質(SiO2)の屈折率(波長1.5umにおけるSiO2薄膜の屈折率)
+	double KSiOx = 2.9107 * pow(10.0, -7.0);																// 媒質(SiO2)の消衰係数(波長1.5umにおけるSiO2薄膜の消衰係数)
+	double cSiOx = c0 / nSiOx;																				// 媒質(SiO2)中における光の速さ [m/sec]
+	double lSiOx = cSiOx / f0;																				// 媒質(SiO2)中における光の波長(linear opticsの場合で考える) [m] ※linear opticsの場合: 媒質中も真空中も周波数は等しい(周波数は媒質中でも不変), nonlinear opticsの場合: 非線形現象により波長が変化する
+	double dSiOx = l0 * 1.0;																				// 媒質(SiO2)の領域 [m] ※1次元
+	double PerESiOx = 3.8 * PerE0;																			// 媒質(SiO2)の誘電率 [F/m] ※比誘電率3.8で計算
+	double PerMSiOx = 1.0 * PerM0;																			// 媒質(SiO2)の透磁率 [H/m] ※非磁性体として比透磁率1.0で計算
+	double ZSiOx = sqrt(PerMSiOx / PerESiOx);																// 媒質(SiO2)における波動Impedance
+	double SigmaSiOx = 0.0;																					// 媒質(SiO2)の導電率 [S/m] ※n型半導体として (電気素量 [C]) * (電子濃度 [m-3]) * (電子移動度 [m2/Vsec])
+
+	_Dcomplex NSiOx = _Cbuild(nSiOx, KSiOx);																// 媒質(SiO2)の複素屈折率 = (屈折率) + (消衰係数) * 虚数i
+	_Dcomplex kSiOx = _Cmulcr(NSiOx, w0 / cSiOx);															// 媒質(SiO2)における波数 = (媒質(SiO2)の複素屈折率) * (周波数) / (媒質(SiO2)中における光の速さ)
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// FDTD法における時間差分用 および 空間差分用の設定値
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	int i, j;																								// 空間差分用の空間step数(解析領域分割数 = cell数)に対するcounter変数
+	int t;																									// 時間差分用の時間step数に対するcounter変数
+
+	//double x = l0 * 10.0;																					// x軸方向における解析領域の範囲 [m] ※xy平面の2次元
+	//double y = l0 * 10.0;																					// y軸方向における解析領域の範囲 [m] ※xy平面の2次元
+	double x = 15.0 * pow(10.0, -6.0);																		// x軸方向における解析領域の範囲 [m] ※xy平面の2次元
+	double y = 15.0 * pow(10.0, -6.0);																		// y軸方向における解析領域の範囲 [m] ※xy平面の2次元
+	int Nx = 750;																							// x軸方向における空間差分用の空間step数
+	int Ny = 750;																							// y軸方向における空間差分用の空間step数
+	int Nt = 1500;																							// 時間差分用の時間step数
+
+	double dx = x / Nx;																						// x軸方向におけるcellの幅 [m]
+	double dy = y / Ny;																						// y軸方向におけるcellの幅 [m]
+	double dt = x / (c0 * Nt);																				// 時間差分における単位step時間 [sec]
+
+
+
+
+	//========================================================================================================================================================================
+	//(2). 媒質による誘電率分布と透磁率分布の設定 および 計算
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 誘電率分布 および 透磁率分布の設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double** PerE = NULL;																					// 解析領域における誘電率分布を設定するための変数
+	double** PerM = NULL;																					// 解析領域における透磁率分布を設定するための変数
+	PerE = (double**)malloc(sizeof(double*) * (Nx + 1));													// 解析領域における誘電率分布用ポインタ変数の1つ目の配列要素数を設定(x軸方向成分)
+	PerM = (double**)malloc(sizeof(double*) * (Nx + 1));													// 解析領域における透磁率分布用ポインタ変数の1つ目の配列要素数を設定(x軸方向成分)
+	if (PerE == NULL)		exit(0);
+	if (PerM == NULL)		exit(0);
+
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		PerE[i] = (double*)malloc(sizeof(double) * (Ny + 1));												// 解析領域における誘電率分布用ポインタ変数の2つ目の配列要素数を設定(y軸方向成分)
+		PerM[i] = (double*)malloc(sizeof(double) * (Ny + 1));												// 解析領域における透磁率分布用ポインタ変数の2つ目の配列要素数を設定(y軸方向成分)
+	}
+	if (PerE == NULL)		exit(0);
+	if (PerM == NULL)		exit(0);
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// "Silicon Micro-Ring ResonatorおよびSilicon Waveguideを表現するための変数設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double** r_left = NULL;																					// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元) ※解析領域左側
+	double** r_right = NULL;																				// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元) ※解析領域右側
+
+	r_left = (double**)malloc(sizeof(double*) * (Nx + 1));													// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元)における1つ目の配列要素数を設定(x軸方向成分)
+	r_right = (double**)malloc(sizeof(double*) * (Nx + 1));													// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元)における1つ目の配列要素数を設定(x軸方向成分)
+
+	if (r_left == NULL)			exit(0);
+	if (r_right == NULL)		exit(0);
+
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		r_left[i] = (double*)malloc(sizeof(double) * (Ny + 1));												// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元)における1つ目の配列要素数を設定(y軸方向成分)
+		r_right[i] = (double*)malloc(sizeof(double) * (Ny + 1));											// Micro-RingあるいはCurveの光行路(光導波路)を表現するためのradius設定用のポインタ変数(2次元)における1つ目の配列要素数を設定(y軸方向成分)
+	}
+	if (r_left == NULL)			exit(0);
+	if (r_right == NULL)		exit(0);
+
+
+	// Micro-RingあるいはCurveの光行路長(光導波路長)を計算(ポインタ変数に格納)
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		for (int j = 0; j < Ny + 1; j++)
+		{
+			r_left[i][j] = sqrt(pow((i - 300) * dx * pow(10.0, 6.0), 2.0) + pow((j - 375) * dy * pow(10.0, 6.0), 2.0));
+			r_right[i][j] = sqrt(pow((i - 450) * dx * pow(10.0, 6.0), 2.0) + pow((j - 375) * dy * pow(10.0, 6.0), 2.0));
+		}
+	}
+
+
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 誘電率分布 および 透磁率分布の配置座標(存在位置)の設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 解析領域左側における誘電体媒質分布(x軸成分の解析領域における左側範囲)
+	for (int i = 0; i < 376; i++)
+	{
+		for (int j = 0; j < Ny + 1; j++)
+		{
+			if (i >= 45 && i <= 300 && r_left[i][j] >= 4.7 && r_left[i][j] <= 5.1)							// 解析領域左側のRaceTrack部分における円形部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (i > 300 && i <= 375 && j >= 120 && j <= 140)											// 解析領域左側のRaceTrack部分における下側直線部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (i > 300 && i <= 375 && j >= 610 && j <= 630)											// 解析領域左側のRaceTrack部分における上側直線部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (j >= 95 && j <= 115)																	// 解析領域左側におけるInput port用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (j >= 635 && j <= 655)																	// 解析領域左側におけるDrop port用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else
+			{
+				PerE[i][j] = PerE0;
+				PerM[i][j] = PerM0;
+			}
+		}
+	}
+
+
+	// 解析領域右側における誘電体媒質分布(x軸成分の解析領域における右側範囲)
+	for (int i = 376; i < Nx + 1; i++)
+	{
+		for (int j = 0; j < Ny + 1; j++)
+		{
+			if (i >= 450 && i <= 705 && r_right[i][j] >= 4.7 && r_right[i][j] <= 5.1)						// 解析領域右側のRaceTrack部分における円形部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (i >= 376 && i < 450 && j >= 120 && j <= 140)											// 解析領域右側のRaceTrack部分における下側直線部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (i >= 376 && i < 450 && j >= 610 && j <= 630)											// 解析領域右側のRaceTrack部分における上側直線部分用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (j >= 95 && j <= 115)																	// 解析領域右側におけるThrough Pass port用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else if (j >= 635 && j <= 655)																	// 解析領域右側におけるAdd port用誘電体媒質の分布
+			{
+				PerE[i][j] = PerESi;
+				PerM[i][j] = PerMSi;
+			}
+
+			else
+			{
+				PerE[i][j] = PerE0;
+				PerM[i][j] = PerM0;
+			}
+		}
+	}
+
+
+
+
+	//========================================================================================================================================================================
+	//(3). PML吸収境界条件適用のための設定 および PML領域における導電率と(仮想的な)導磁率の計算
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// PML層(PML領域)の設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	int Lx_PML = 25;																						// x軸におけるPML吸収境界条件用のPML層数(片側)
+	int Ly_PML = 25;																						// x軸におけるPML吸収境界条件用のPML層数(片側)
+	float M = 5.0;																							// PML吸収境界条件における分布の次数
+	double dx_PML = dx * Lx_PML;																			// x軸における片側PML厚さ [m]
+	double dy_PML = dy * Ly_PML;																			// y軸における片側PML厚さ [m]
+	double R_Coe = pow(10.0, -2.0);																			// 反射係数"R"
+	//double sigmaX_max = -((M + 1.0) / (2.0 * ZSi * dx)) * log(R_Coe);										// PML吸収境界条件における最大導電率用の変数(x軸方向) ※PML領域は左側も右側も真空と仮定
+	//double sigmaY_max = -((M + 1.0) / (2.0 * ZSi * dy)) * log(R_Coe);										// PML吸収境界条件における最大導電率用の変数(y軸方向) ※PML領域は左側も右側も真空と仮定
+	double sigmaX_max = -((M + 1.0) / (2.0 * Z0 * dx)) * log(R_Coe);										// PML吸収境界条件における最大導電率用の変数(x軸方向) ※PML領域は左側も右側も真空と仮定
+	double sigmaY_max = -((M + 1.0) / (2.0 * Z0 * dy)) * log(R_Coe);										// PML吸収境界条件における最大導電率用の変数(y軸方向) ※PML領域は左側も右側も真空と仮定
+
+	double* sigmaE_x = NULL;																				// PML吸収境界条件におけるx軸方向のPML層(PML領域)の導電率用ポインタ変数
+	double* sigmaE_y = NULL;																				// PML吸収境界条件におけるy軸方向のPML層(PML領域)の導電率用ポインタ変数
+	double* sigmaM_x = NULL;																				// PML吸収境界条件におけるx軸方向のPML層(PML領域)の仮想的な導磁率用ポインタ変数
+	double* sigmaM_y = NULL;																				// PML吸収境界条件におけるy軸方向のPML層(PML領域)の仮想的な導磁率用ポインタ変数
+	sigmaE_x = (double*)malloc(sizeof(double) * (Nx + 1));													// PML吸収境界条件におけるx軸方向の導電率用ポインタ変数の1つ目の配列要素数を設定
+	sigmaE_y = (double*)malloc(sizeof(double) * (Ny + 1));													// PML吸収境界条件におけるy軸方向の導電率用ポインタ変数の1つ目の配列要素数を設定
+	sigmaM_x = (double*)malloc(sizeof(double) * (Nx + 1));													// PML吸収境界条件におけるx軸方向の仮想的な導磁率用ポインタ変数の1つ目の配列要素数を設定
+	sigmaM_y = (double*)malloc(sizeof(double) * (Ny + 1));													// PML吸収境界条件におけるy軸方向の仮想的な導磁率用ポインタ変数の1つ目の配列要素数を設定
+	if (sigmaE_x == NULL)	exit(0);
+	if (sigmaE_y == NULL)	exit(0);
+	if (sigmaM_x == NULL)	exit(0);
+	if (sigmaM_y == NULL)	exit(0);
+
+
+	for (int i = 0; i < Nx + 1; i++)																		// x軸方向におけるPML領域の導電率 および 仮想的な導磁率を設定
+	{
+		if (i < Lx_PML)
+		{
+			sigmaE_x[i] = sigmaX_max * pow(1.0 - (i * dx) / dx_PML, M);										// PML領域左側における導電率計算(解析領域の左側)
+			//sigmaM_x[i] = sigmaE_x[i] * (PerMSi / PerESi);													// PML領域左側における仮想的な導磁率計算(解析領域の左側) ※Impedance matching条件から計算
+			sigmaM_x[i] = sigmaE_x[i] * (PerM0 / PerE0);													// PML領域左側における仮想的な導磁率計算(解析領域の左側) ※Impedance matching条件から計算
+		}
+
+		else if (i > Nx - Lx_PML)
+		{
+			sigmaE_x[i] = sigmaX_max * pow((i * dx - (Nx - Lx_PML) * dx) / dx_PML, M);						// PML領域右側における導電率計算(解析領域の右側)
+			//sigmaM_x[i] = sigmaE_x[i] * (PerMSi / PerESi);													// PML領域右側における仮想的な導磁率計算(解析領域の右側) ※Impedance matching条件から計算
+			sigmaM_x[i] = sigmaE_x[i] * (PerM0 / PerE0);													// PML領域右側における仮想的な導磁率計算(解析領域の右側) ※Impedance matching条件から計算
+		}
+
+		else
+		{
+			sigmaE_x[i] = 0.0;																				// PML領域外(媒質(SiおよびSiO2)領域など)における導電率は, 電流源が存在しない自由空間を想定のため, ここでは"0.0"と設定
+			sigmaM_x[i] = 0.0;																				// PML領域外(媒質(SiおよびSiO2)領域など)における仮想的な導磁率は, 磁流源が存在しない自由空間を想定のため, ここでは"0.0"と設定
+		}
+	}
+
+	for (int j = 0; j < Ny + 1; j++)																		// y軸方向におけるPML領域の導電率 および 仮想的な導磁率を設定
+	{
+		if (j < Ly_PML)
+		{
+			sigmaE_y[j] = sigmaY_max * pow(1.0 - (j * dy) / dy_PML, M);										// PML領域下側における導電率計算(解析領域の下側)
+			//sigmaM_y[j] = sigmaE_y[j] * (PerMSi / PerESi);													// PML領域下側における仮想的な導磁率計算(解析領域の下側) ※Impedance matching条件から計算
+			sigmaM_y[j] = sigmaE_y[j] * (PerM0 / PerE0);													// PML領域下側における仮想的な導磁率計算(解析領域の下側) ※Impedance matching条件から計算
+		}
+
+		else if (j > Ny - Ly_PML)
+		{
+			sigmaE_y[j] = sigmaY_max * pow((j * dy - (Ny - Ly_PML) * dy) / dy_PML, M);						// PML領域上側における導電率計算(解析領域の上側)
+			//sigmaM_y[j] = sigmaE_y[j] * (PerMSi / PerESi);													// PML領域上側における仮想的な導磁率計算(解析領域の上側) ※Impedance matching条件から計算
+			sigmaM_y[j] = sigmaE_y[j] * (PerM0 / PerE0);													// PML領域上側における仮想的な導磁率計算(解析領域の上側) ※Impedance matching条件から計算
+		}
+
+		else
+		{
+			sigmaE_y[j] = 0.0;																				// PML領域外(媒質(SiおよびSiO2)領域など)における導電率は, 電流源が存在しない自由空間を想定のため, ここでは"0.0"と設定
+			sigmaM_y[j] = 0.0;																				// PML領域外(媒質(SiおよびSiO2)領域など)における仮想的な導磁率は, 磁流源が存在しない自由空間を想定のため, ここでは"0.0"と設定
+		}
+	}
+
+
+
+
+	//========================================================================================================================================================================
+	//(4). FDTD法による時間差分 および 空間差分における係数の設定と計算
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 係数の設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double** Ae_x = NULL;																					// 時間差分における電場計算用の係数のためのポインタ変数(x成分)
+	double** Ae_y = NULL;																					// 時間差分における電場計算用の係数のためのポインタ変数(y成分)
+	double** Be_x = NULL;																					// 空間差分における電場計算用の係数のためのポインタ変数(x成分)
+	double** Be_y = NULL;																					// 空間差分における電場計算用の係数のためのポインタ変数(y成分)
+	Ae_x = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Ae_y = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Be_x = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Be_y = (double**)malloc(sizeof(double*) * (Nx + 1));
+	if (Ae_x == NULL)	exit(0);
+	if (Ae_y == NULL)	exit(0);
+	if (Be_x == NULL)	exit(0);
+	if (Be_y == NULL)	exit(0);
+
+	double** Am_x = NULL;																					// 時間差分における磁場計算用の係数のためのポインタ変数(x成分)
+	double** Am_y = NULL;																					// 時間差分における磁場計算用の係数のためのポインタ変数(y成分)
+	double** Bm_x = NULL;																					// 空間差分における磁場計算用の係数のためのポインタ変数(x成分)
+	double** Bm_y = NULL;																					// 空間差分における磁場計算用の係数のためのポインタ変数(y成分)
+	Am_x = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Am_y = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Bm_x = (double**)malloc(sizeof(double*) * (Nx + 1));
+	Bm_y = (double**)malloc(sizeof(double*) * (Nx + 1));
+	if (Am_x == NULL)		exit(0);
+	if (Am_y == NULL)		exit(0);
+	if (Bm_x == NULL)		exit(0);
+	if (Bm_y == NULL)		exit(0);
+
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		Ae_x[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Ae_y[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Be_x[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Be_y[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+
+		Am_x[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Am_y[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Bm_x[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+		Bm_y[i] = (double*)malloc(sizeof(double) * (Ny + 1));
+	}
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 係数の計算
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		for (int j = 0; j < Ny + 1; j++)
+		{
+			Ae_x[i][j] = (1.0 - (sigmaE_x[i] * dt) / (2.0 * PerE[i][j])) / (1.0 + (sigmaE_x[i] * dt) / (2.0 * PerE[i][j]));
+			Ae_y[i][j] = (1.0 - (sigmaE_y[j] * dt) / (2.0 * PerE[i][j])) / (1.0 + (sigmaE_y[j] * dt) / (2.0 * PerE[i][j]));
+			Be_x[i][j] = (dt / PerE[i][j]) / (1.0 + (sigmaE_x[i] * dt) / (2.0 * PerE[i][j]));
+			Be_y[i][j] = (dt / PerE[i][j]) / (1.0 + (sigmaE_y[j] * dt) / (2.0 * PerE[i][j]));
+
+			Am_x[i][j] = (1.0 - (sigmaM_x[i] * dt) / (2.0 * PerM[i][j])) / (1.0 + (sigmaM_x[i] * dt) / (2.0 * PerM[i][j]));
+			Am_y[i][j] = (1.0 - (sigmaM_y[j] * dt) / (2.0 * PerM[i][j])) / (1.0 + (sigmaM_y[j] * dt) / (2.0 * PerM[i][j]));
+			Bm_x[i][j] = (dt / PerM[i][j]) / (1.0 + (sigmaM_x[i] * dt) / (2.0 * PerM[i][j]));
+			Bm_y[i][j] = (dt / PerM[i][j]) / (1.0 + (sigmaM_y[j] * dt) / (2.0 * PerM[i][j]));
+		}
+	}
+
+
+
+
+	//========================================================================================================================================================================
+	//(5). FDTD法による数値計算(電磁場解析)
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 電磁場計算用ポインタ変数の設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	double** Ez_x = NULL;																					// TM modeにおける電場計算用ポインタ変数(x成分)
+	double** Ez_y = NULL;																					// TM modeにおける電場計算用ポインタ変数(y成分)
+	double** Ez = NULL;																						// TM modeにおける電場計算用ポインタ変数 ※"Ez_x"と"Ez_y"の和
+	double** Hx = NULL;																						// 磁場計算用ポインタ変数(x成分)
+	double** Hy = NULL;																						// 磁場計算用ポインタ変数(y成分)
+	Ez_x = (double**)malloc(sizeof(double*) * (Nx + 1));													// x成分の電場計算用ポインタ変数(2次元配列)について1つ目の配列要素数を設定(x軸方向用の配列要素)
+	Ez_y = (double**)malloc(sizeof(double*) * (Nx + 1));													// y成分の電場計算用ポインタ変数(2次元配列)について1つ目の配列要素数を設定(x軸方向用の配列要素)
+	Ez = (double**)malloc(sizeof(double*) * (Nx + 1));														// TM modeにおける電場計算用ポインタ変数(2次元配列)について1つ目の配列要素数を設定(x軸方向用の配列要素)
+	Hx = (double**)malloc(sizeof(double*) * (Nx + 1));														// x成分の磁場計算用ポインタ変数(2次元配列)について1つ目の配列要素数を設定(x軸方向用の配列要素)
+	Hy = (double**)malloc(sizeof(double*) * (Nx + 1));														// y成分の磁場計算用ポインタ変数(2次元配列)について1つ目の配列要素数を設定(x軸方向用の配列要素)
+	if (Ez_x == NULL)	exit(0);
+	if (Ez_y == NULL)	exit(0);
+	if (Ez == NULL)		exit(0);
+	if (Hx == NULL)		exit(0);
+	if (Hy == NULL)		exit(0);
+
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		Ez_x[i] = (double*)malloc(sizeof(double) * (Ny + 1));												// x成分の電場計算用ポインタ変数(2次元配列)について2つ目の配列要素数を設定(y軸方向用の配列要素)
+		Ez_y[i] = (double*)malloc(sizeof(double) * (Ny + 1));												// y成分の電場計算用ポインタ変数(2次元配列)について2つ目の配列要素数を設定(y軸方向用の配列要素)
+		Ez[i] = (double*)malloc(sizeof(double) * (Ny + 1));													// TM modeにおける電場計算用ポインタ変数(2次元配列)について2つ目の配列要素数を設定(y軸方向用の配列要素)
+		Hx[i] = (double*)malloc(sizeof(double) * (Ny + 1));													// x成分の磁場計算用ポインタ変数(2次元配列)について2つ目の配列要素数を設定(y軸方向用の配列要素)
+		Hy[i] = (double*)malloc(sizeof(double) * (Ny + 1));													// x成分の磁場計算用ポインタ変数(2次元配列)について2つ目の配列要素数を設定(y軸方向用の配列要素)
+	}
+	if (Ez_x == NULL)	exit(0);
+	if (Ez_y == NULL)	exit(0);
+	if (Ez == NULL)		exit(0);
+	if (Hx == NULL)		exit(0);
+	if (Hy == NULL)		exit(0);
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 電磁場の初期値設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	for (int i = 0; i < Nx + 1; i++)
+	{
+		for (int j = 0; j < Ny + 1; j++)
+		{
+			Ez_x[i][j] = 0.0;
+			Ez_y[i][j] = 0.0;
+			Ez[i][j] = 0.0;
+			Hx[i][j] = 0.0;
+			Hy[i][j] = 0.0;
+		}
+	}
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// Appendix. 数値計算結果のData File生成のための設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	//FILE* file_a = fopen("E1ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_a == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_b = fopen("E2ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_b == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_c = fopen("E3ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_c == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_d = fopen("E4ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_d == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_e = fopen("E5ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_e == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_f = fopen("E6ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_f == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_g = fopen("E7ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_g == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_h = fopen("E8ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_h == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_i = fopen("E9ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_i == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_j = fopen("E10ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_j == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+
+	
+	
+	
+	FILE* file_a = fopen("E4_05ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_a == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_b = fopen("E4_10ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_b == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_c = fopen("E4_15ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_c == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_d = fopen("E4_20ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_d == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_e = fopen("E4_25ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_e == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_f = fopen("E4_30ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_f == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_g = fopen("E4_32ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_g == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_h = fopen("E4_34ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_h == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_i = fopen("E4_36ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_i == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_j = fopen("E4_38ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_j == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_k = fopen("E4_40ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_k == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_l = fopen("E4_42ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_l == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_m = fopen("E4_44ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_m == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_n = fopen("E4_46ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_n == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_o = fopen("E4_48ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_o == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_p = fopen("E4_50ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_p == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_q = fopen("E4_55ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_q == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_r = fopen("E4_60ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_r == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_s = fopen("E4_65ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_s == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_t = fopen("E4_70ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_t == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_u = fopen("E4_75ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_u == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_v = fopen("E4_80ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_v == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_w = fopen("E4_85ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_w == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_x = fopen("E4_90ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_x == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_y = fopen("E4_95ps_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_y == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	
+	
+	
+	
+	//FILE* file_aa = fopen("E_Input_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_aa == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_ab = fopen("E_Through_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_ab == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+	//FILE* file_ac = fopen("E_Drop_1530CW_1552P_Pulse2psDelay4ps.txt", "w");
+	//if (file_ac == NULL)
+	//{
+	//	printf("Error: can't open file\n");
+	//	return 1;
+	//}
+
+	FILE* file_aa = fopen("Efine_Input_1530CW_1522P_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_aa == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_ab = fopen("Efine_Through_1530CW_1522P_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_ab == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+	FILE* file_ac = fopen("Efine_Drop_1530CW_1522P_1552P_Pulse2psDelay4ps.txt", "w");
+	if (file_ac == NULL)
+	{
+		printf("Error: can't open file\n");
+		return 1;
+	}
+
+
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 2次元pulse波形(2次元確率分布関数 = 2次元Gauss分布)を表現するための設定
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	//double a = lSi * 0.1;																					// x成分の分散
+	//double b = lSi * 0.1;																					// y成分の分散
+	//double a = l0 * 1.0;																					// x成分の分散
+	//double b = l0 * 1.0;																					// y成分の分散
+	double a = 8.5 * pow(10.0, -13.0);																		// x成分の分散
+	double b = 1.0;																							// y成分の分散
+
+
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// 電磁場数値計算のための時間stepにおけるLoop処理
+	//------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	for (int t = 0; t < (201 * Nt) + 1; t++)
+	{
+		// 円形波の電磁場導入(電場の導入)
+		//Ez[25][105] = sin(w0 * t * dt);
+
+
+		// 平面波の電磁場導入(電場の導入)
+		for (int j = 95; j < 116; j++)
+		{
+			// only fixed wave in input port --> Through port: "0", Drop port: "1"
+			//Ez[25][j] = sin(w0 * t * dt);
+			//Ez[25][j] = exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w1 * (t - 119916) * dt);
+			//Ez[25][j] = exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w2 * (t - 119916) * dt);
+
+			Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w1 * (t - 119916) * dt) + exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w2 * (t - 119916) * dt);
+			//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w1 * (t - 119916) * dt);
+			//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow(((t - 119916) * dt) / a, 2.0))) * cos(w2 * (t - 119916) * dt);
+
+			// adding pump pulse signal after the source (continuous sine wave) gtes fixed wave 
+			//if (t < 35955)
+			//{
+				// only fixed wave in input port --> Through port: "0", Drop port: "1"
+				//Ez[25][j] = sin(w0 * t * dt);
+
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w1 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w2 * t * dt);
+
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w1 * t * dt);
+
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w2 * t * dt);
+				
+				
+				//Ez[25][j] = 0.0;
+			//}
+
+			//else if (t >= 35955)
+			//{
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w1 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w2 * t * dt);
+
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w1 * t * dt);
+
+				// Through port: "1", Drop port: "0"
+				//Ez[25][j] = sin(w0 * t * dt) + exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w2 * t * dt);
+				
+				
+				//Ez[25][j] = exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w1 * t * dt);
+				//Ez[25][j] = exp(-(1.0 / 2.0) * (pow((t * dt) / a, 2.0))) * cos(w2 * t * dt);
+			//}
+		}
+
+
+		// 磁場の更新(ループ計算)
+		for (int i = 0; i < Nx; i++)
+		{
+			for (int j = 0; j < Ny; j++)
+			{
+				Hx[i][j] = Am_y[i][j] * Hx[i][j] - (Bm_y[i][j] / dy) * (Ez[i][j + 1] - Ez[i][j]);			// 
+				Hy[i][j] = Am_x[i][j] * Hy[i][j] + (Bm_x[i][j] / dx) * (Ez[i + 1][j] - Ez[i][j]);			// 
+			}
+		}
+
+		// 電場の更新(ループ計算)
+		for (int i = 1; i < Nx + 1; i++)
+		{
+			for (int j = 1; j < Ny + 1; j++)
+			{
+				Ez_x[i][j] = Ae_x[i][j] * Ez_x[i][j] + (Be_x[i][j] / dx) * (Hy[i][j] - Hy[i - 1][j]);		// 
+				Ez_y[i][j] = Ae_y[i][j] * Ez_y[i][j] - (Be_y[i][j] / dy) * (Hx[i][j] - Hx[i][j - 1]);		// 
+				Ez[i][j] = Ez_x[i][j] + Ez_y[i][j];															// 
+			}
+		}
+
+
+		// Appendix. 数値計算結果のData File生成
+		//if (t == 29979)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_a, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_a, "\n");
+		//	}
+		//	fprintf(file_a, "\n");
+		//}
+
+		//if (t == 59958)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_b, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_b, "\n");
+		//	}
+		//	fprintf(file_b, "\n");
+		//}
+
+		//if (t == 89937)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_c, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_c, "\n");
+		//	}
+		//	fprintf(file_c, "\n");
+		//}
+
+		//if (t == 119916)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_d, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_d, "\n");
+		//	}
+		//	fprintf(file_d, "\n");
+		//}
+
+		//if (t == 149896)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_e, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_e, "\n");
+		//	}
+		//	fprintf(file_e, "\n");
+		//}
+
+		//if (t == 179875)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_f, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_f, "\n");
+		//	}
+		//	fprintf(file_f, "\n");
+		//}
+
+		//if (t == 209854)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_g, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_g, "\n");
+		//	}
+		//	fprintf(file_g, "\n");
+		//}
+
+		//if (t == 239833)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_h, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_h, "\n");
+		//	}
+		//	fprintf(file_h, "\n");
+		//}
+
+		//if (t == 269813)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_i, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_i, "\n");
+		//	}
+		//	fprintf(file_i, "\n");
+		//}
+
+		//if (t == 299792)
+		//{
+		//	for (int i = 25; i < Nx - Lx_PML + 1; i++)
+		//	{
+		//		for (int j = 25; j < Ny - Ly_PML + 1; j++)
+		//		{
+		//			fprintf(file_j, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+		//		}
+		//		fprintf(file_j, "\n");
+		//	}
+		//	fprintf(file_j, "\n");
+		//}
+		
+		
+		
+		if (t == 121415)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_a, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_a, "\n");
+			}
+			fprintf(file_a, "\n");
+		}
+
+		if (t == 122914)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_b, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_b, "\n");
+			}
+			fprintf(file_b, "\n");
+		}
+
+		if (t == 124413)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_c, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_c, "\n");
+			}
+			fprintf(file_c, "\n");
+		}
+
+		if (t == 125912)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_d, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_d, "\n");
+			}
+			fprintf(file_d, "\n");
+		}
+
+		if (t == 127411)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_e, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_e, "\n");
+			}
+			fprintf(file_e, "\n");
+		}
+
+		if (t == 128910)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_f, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_f, "\n");
+			}
+			fprintf(file_f, "\n");
+		}
+
+		if (t == 129510)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_g, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_g, "\n");
+			}
+			fprintf(file_g, "\n");
+		}
+
+		if (t == 130109)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_h, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_h, "\n");
+			}
+			fprintf(file_h, "\n");
+		}
+
+		if (t == 130709)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_i, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_i, "\n");
+			}
+			fprintf(file_i, "\n");
+		}
+
+		if (t == 131309)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_j, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_j, "\n");
+			}
+			fprintf(file_j, "\n");
+		}
+
+		if (t == 131908)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_k, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_k, "\n");
+			}
+			fprintf(file_k, "\n");
+		}
+		
+		if (t == 132508)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_l, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_l, "\n");
+			}
+			fprintf(file_l, "\n");
+		}
+
+		if (t == 133107)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_m, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_m, "\n");
+			}
+			fprintf(file_m, "\n");
+		}
+
+		if (t == 133707)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_n, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_n, "\n");
+			}
+			fprintf(file_n, "\n");
+		}
+
+		if (t == 134307)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_o, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_o, "\n");
+			}
+			fprintf(file_o, "\n");
+		}
+
+		if (t == 134906)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_p, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_p, "\n");
+			}
+			fprintf(file_p, "\n");
+		}
+
+		if (t == 136405)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_q, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_q, "\n");
+			}
+			fprintf(file_q, "\n");
+		}
+
+		if (t == 137904)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_r, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_r, "\n");
+			}
+			fprintf(file_r, "\n");
+		}
+
+		if (t == 139403)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_s, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_s, "\n");
+			}
+			fprintf(file_s, "\n");
+		}
+
+		if (t == 140902)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_t, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_t, "\n");
+			}
+			fprintf(file_t, "\n");
+		}
+
+		if (t == 142401)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_u, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_u, "\n");
+			}
+			fprintf(file_u, "\n");
+		}
+
+		if (t == 143900)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_v, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_v, "\n");
+			}
+			fprintf(file_v, "\n");
+		}
+
+		if (t == 145399)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_w, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_w, "\n");
+			}
+			fprintf(file_w, "\n");
+		}
+
+		if (t == 146898)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_x, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_x, "\n");
+			}
+			fprintf(file_x, "\n");
+		}
+
+		if (t == 148397)
+		{
+			for (int i = 25; i < Nx - Lx_PML + 1; i++)
+			{
+				for (int j = 25; j < Ny - Ly_PML + 1; j++)
+				{
+					fprintf(file_y, "%.3f\t%.3f\t%f\n", (i - 25) * dx * pow(10.0, 6.0), (j - 25) * dy * pow(10.0, 6.0), Ez[i][j]);
+				}
+				fprintf(file_y, "\n");
+			}
+			fprintf(file_y, "\n");
+		}
+
+
+
+
+		//if (t % 30 == 0)
+		//{
+		//	fprintf(file_aa, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][105], Ez[51][105], Ez[52][105], Ez[53][105], Ez[54][105], Ez[55][105], Ez[56][105], Ez[57][105], Ez[58][105], Ez[59][105], Ez[60][105], Ez[61][105], Ez[62][105], Ez[63][105], Ez[64][105], Ez[65][105], Ez[66][105], Ez[67][105], Ez[68][105], Ez[69][105], Ez[70][105], Ez[71][105], Ez[72][105], Ez[73][105], Ez[74][105], Ez[75][105]);
+		//	fprintf(file_ab, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[675][105], Ez[676][105], Ez[677][105], Ez[678][105], Ez[679][105], Ez[680][105], Ez[681][105], Ez[682][105], Ez[683][105], Ez[684][105], Ez[685][105], Ez[686][105], Ez[687][105], Ez[688][105], Ez[689][105], Ez[690][105], Ez[691][105], Ez[692][105], Ez[693][105], Ez[694][105], Ez[695][105], Ez[696][105], Ez[697][105], Ez[698][105], Ez[699][105], Ez[700][105]);
+		//	fprintf(file_ac, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][645], Ez[51][645], Ez[52][645], Ez[53][645], Ez[54][645], Ez[55][645], Ez[56][645], Ez[57][645], Ez[58][645], Ez[59][645], Ez[60][645], Ez[61][645], Ez[62][645], Ez[63][645], Ez[64][645], Ez[65][645], Ez[66][645], Ez[67][645], Ez[68][645], Ez[69][645], Ez[70][645], Ez[71][645], Ez[72][645], Ez[73][645], Ez[74][645], Ez[75][645]);
+		//}
+
+		if (t % 30 == 0)
+		{
+			fprintf(file_aa, "%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][105], Ez[51][105], Ez[52][105], Ez[53][105], Ez[54][105], Ez[55][105], Ez[56][105], Ez[57][105], Ez[58][105], Ez[59][105], Ez[60][105], Ez[61][105], Ez[62][105], Ez[63][105], Ez[64][105], Ez[65][105], Ez[66][105], Ez[67][105], Ez[68][105], Ez[69][105], Ez[70][105], Ez[71][105], Ez[72][105], Ez[73][105], Ez[74][105], Ez[75][105]);
+			fprintf(file_ab, "%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[675][105], Ez[676][105], Ez[677][105], Ez[678][105], Ez[679][105], Ez[680][105], Ez[681][105], Ez[682][105], Ez[683][105], Ez[684][105], Ez[685][105], Ez[686][105], Ez[687][105], Ez[688][105], Ez[689][105], Ez[690][105], Ez[691][105], Ez[692][105], Ez[693][105], Ez[694][105], Ez[695][105], Ez[696][105], Ez[697][105], Ez[698][105], Ez[699][105], Ez[700][105]);
+			fprintf(file_ac, "%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][645], Ez[51][645], Ez[52][645], Ez[53][645], Ez[54][645], Ez[55][645], Ez[56][645], Ez[57][645], Ez[58][645], Ez[59][645], Ez[60][645], Ez[61][645], Ez[62][645], Ez[63][645], Ez[64][645], Ez[65][645], Ez[66][645], Ez[67][645], Ez[68][645], Ez[69][645], Ez[70][645], Ez[71][645], Ez[72][645], Ez[73][645], Ez[74][645], Ez[75][645]);
+		}
+
+
+
+		
+		//if (t % 300 == 0)
+		//{
+		//	//for (int i = 50; i < 76; i++)
+		//	//{
+		//	//	fprintf(data_c, "%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[i][105]);
+		//	//}
+		//	//fprintf(data_c, "\n");
+		//	
+		//	//for (int i = 50; i < 76; i++)
+		//	//{
+		//	//	fprintf(data_b, "%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[i][645]);
+		//	//}
+		//	//fprintf(data_b, "\n");
+		//	//
+		//	//for (int i = 675; i < 701; i++)
+		//	//{
+		//	//	fprintf(data_a, "%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[i][105]);
+		//	//}
+		//	//fprintf(data_a, "\n");
+
+		//	fprintf(data_c, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][105], Ez[51][105], Ez[52][105], Ez[53][105], Ez[54][105], Ez[55][105], Ez[56][105], Ez[57][105], Ez[58][105], Ez[59][105], Ez[60][105], Ez[61][105], Ez[62][105], Ez[63][105], Ez[64][105], Ez[65][105], Ez[66][105], Ez[67][105], Ez[68][105], Ez[69][105], Ez[70][105], Ez[71][105], Ez[72][105], Ez[73][105], Ez[74][105], Ez[75][105]);
+		//	fprintf(data_b, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[50][645], Ez[51][645], Ez[52][645], Ez[53][645], Ez[54][645], Ez[55][645], Ez[56][645], Ez[57][645], Ez[58][645], Ez[59][645], Ez[60][645], Ez[61][645], Ez[62][645], Ez[63][645], Ez[64][645], Ez[65][645], Ez[66][645], Ez[67][645], Ez[68][645], Ez[69][645], Ez[70][645], Ez[71][645], Ez[72][645], Ez[73][645], Ez[74][645], Ez[75][645]);
+		//	fprintf(data_a, "%.3f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n", t * dt * pow(10.0, 12.0), Ez[675][105], Ez[676][105], Ez[677][105], Ez[678][105], Ez[679][105], Ez[680][105], Ez[681][105], Ez[682][105], Ez[683][105], Ez[684][105], Ez[685][105], Ez[686][105], Ez[687][105], Ez[688][105], Ez[689][105], Ez[690][105], Ez[691][105], Ez[692][105], Ez[693][105], Ez[694][105], Ez[695][105], Ez[696][105], Ez[697][105], Ez[698][105], Ez[699][105], Ez[700][105]);
+		//}
+		
+	}
+
+	fclose(file_a);
+	fclose(file_b);
+	fclose(file_c);
+	fclose(file_d);
+	fclose(file_e);
+	fclose(file_f);
+	fclose(file_g);
+	fclose(file_h);
+	fclose(file_i);
+	fclose(file_j);
+	fclose(file_k);
+	fclose(file_l);
+	fclose(file_m);
+	fclose(file_n);
+	fclose(file_o);
+	fclose(file_p);
+	fclose(file_q);
+	fclose(file_r);
+	fclose(file_s);
+	fclose(file_t);
+	fclose(file_u);
+	fclose(file_v);
+	fclose(file_w);
+	fclose(file_x);
+	fclose(file_y);
+
+
+	fclose(file_aa);
+	fclose(file_ab);
+	fclose(file_ac);
+
+
+	//fclose(data_a);
+	//fclose(data_b);
+	//fclose(data_c);
+
+
+
+
+	//========================================================================================================================================================================
+	//(Appendix). ポインタ変数のmemory解放 
+
+	for (int j = 0; j < Ny + 1; j++)
+	{
+		free(PerE[j]);
+		free(PerM[j]);
+		free(r_left[j]);
+		free(r_right[j]);
+		//free(SigmaE[j]);
+		//free(SigmaM[j]);
+		free(Ae_x[j]);
+		free(Ae_y[j]);
+		free(Am_x[j]);
+		free(Am_y[j]);
+		free(Be_x[j]);
+		free(Be_y[j]);
+		free(Bm_x[j]);
+		free(Bm_y[j]);
+		//free(Ae[j]);
+		//free(Be[j]);
+		free(Ez_x[j]);
+		free(Ez_y[j]);
+		free(Ez[j]);
+		free(Hx[j]);
+		free(Hy[j]);
+	}
+
+	free(PerE);
+	free(PerM);
+	free(r_left);
+	free(r_right);
+	//free(SigmaE);
+	//free(SigmaM);
+	free(Ae_x);
+	free(Ae_y);
+	free(Am_x);
+	free(Am_y);
+	free(Be_x);
+	free(Be_y);
+	free(Bm_x);
+	free(Bm_y);
+	//free(Ae);
+	//free(Be);
+	free(Ez_x);
+	free(Ez_y);
+	free(Ez);
+	free(Hx);
+	free(Hy);
+
+	free(sigmaE_x);
+	free(sigmaE_y);
+	free(sigmaM_x);
+	free(sigmaM_y);
+
+	//free(angle);
+	//free(r);
+	//free(rx);
+	//free(ry);
+
+
+	return 0;
+}
